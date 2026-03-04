@@ -301,6 +301,7 @@ This makes it significantly more versatile for diverse personal media collection
 - Renaming or moving the indexed folder does not break the cache
 - CPU-only mode works but indexing will be significantly slower
 - After indexing, if any files failed to process, Makimus creates `makimus_skipped_images.txt` and/or `makimus_skipped_videos.txt` inside your indexed folder. Each run appends to the file with a timestamp and the list of failed files — useful for identifying corrupt or unreadable files in your collection
+- Indexing speed depends on your hardware. SSDs are faster overall, but the real bottleneck is your GPU — a powerful GPU will outpace any drive. HDDs work fine but are slower, especially for large collections
 
 ---
 
