@@ -710,6 +710,10 @@ class ImageSearchApp:
         self._pending_video_batches = []
         self._cache_lock = threading.Lock()  # guards flush+save vs live search race
 
+        # Failed file tracking — populated during indexing, written to log at end of run
+        self._failed_images = []   # list of (abs_path, reason)
+        self._failed_videos = []   # list of (abs_path, reason)
+
         # Result type filter (set in build_ui)
         self.show_images_var = None
         self.show_videos_var = None
@@ -948,9 +952,16 @@ class ImageSearchApp:
         search_frame.pack(fill="x", padx=8, pady=4)
         ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 6))
         
-        self.query_entry = tk.Entry(search_frame, font=("Segoe UI", 12), bg=CARD_BG, fg=FG, 
-                                    insertbackground=FG, relief="flat", highlightthickness=1, 
-                                    highlightcolor=ACCENT, highlightbackground=BORDER)
+        self._query_var = tk.StringVar()
+        def _limit_query(*_):
+            v = self._query_var.get()
+            if len(v) > 500:
+                self._query_var.set(v[:500])
+        self._query_var.trace_add("write", _limit_query)
+        self.query_entry = tk.Entry(search_frame, font=("Segoe UI", 12), bg=CARD_BG, fg=FG,
+                                    insertbackground=FG, relief="flat", highlightthickness=1,
+                                    highlightcolor=ACCENT, highlightbackground=BORDER,
+                                    textvariable=self._query_var)
         self.query_entry.pack(side="left", fill="x", expand=True, padx=6)
         self.query_entry.bind("<Return>", lambda e: self.on_search_click())
         self.query_entry.bind("<Button-3>", self._show_search_context_menu)
@@ -1704,6 +1715,7 @@ class ImageSearchApp:
                     except Exception:
                         continue
                     if img is None:
+                        self._failed_images.append((abs_path, "Failed to open or decode"))
                         continue
                     buf_paths.append(abs_path)
                     if tensor is not None:
@@ -1969,6 +1981,11 @@ class ImageSearchApp:
                             file_idx += 1
                             continue
 
+                        # Track videos that returned no frames (failed to extract)
+                        if not frame_list:
+                            abs_video_path = file_list[file_idx] if file_idx < len(file_list) else rel_video_path
+                            self._failed_videos.append((abs_video_path, "No frames extracted"))
+
                         # Encode frame_list in chunks on GPU (main thread only)
                         chunk_frames = []
                         chunk_timestamps = []
@@ -2166,6 +2183,33 @@ class ImageSearchApp:
             except MemoryError:
                 safe_print("[ERROR] Out of memory consolidating video embeddings.")
 
+    def _write_failed_log(self, failed_list, log_filename):
+        """Append failed files from this index run to a log file in the folder.
+        Only writes if there were actual failures. Each run is separated by a dated header.
+        """
+        if not failed_list or not self.folder:
+            return
+        # Deduplicate — same file should not appear twice in one run
+        seen = set()
+        unique = []
+        for path, reason in failed_list:
+            if path not in seen:
+                seen.add(path)
+                unique.append((path, reason))
+        if not unique:
+            return
+        log_path = os.path.join(self.folder, log_filename)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n=== Index run: {timestamp} ===\n")
+                for path, reason in unique:
+                    f.write(f"{os.path.basename(path)} — {reason}\n")
+                f.write(f"=== {len(unique)} failed ===\n")
+            safe_print(f"[LOG] Wrote {len(unique)} failed entries to {log_filename}")
+        except Exception as e:
+            safe_print(f"[LOG] Could not write failed log: {e}")
+
     def _save_cache(self, allow_shrink=False):
         """Save cache with RELATIVE paths — never overwrites a larger existing cache.
         Pass allow_shrink=True when a legitimate prune has reduced the count (e.g. refresh after delete)."""
@@ -2240,7 +2284,11 @@ class ImageSearchApp:
     def _handle_stop(self):
         was_stopped = self.stop_indexing
         count = len(self.image_paths)
-        
+
+        # Write failed image log for this run then reset for next run
+        self._write_failed_log(self._failed_images, "makimus_skipped_images.txt")
+        self._failed_images = []
+
         self.is_indexing = False
         self.stop_indexing = False
         self.is_stopping = False
@@ -2316,6 +2364,10 @@ class ImageSearchApp:
         was_stopped = self.stop_indexing
         n_frames = len(self.video_paths)
         n_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
+
+        # Write failed video log for this run then reset for next run
+        self._write_failed_log(self._failed_videos, "makimus_skipped_videos.txt")
+        self._failed_videos = []
 
         self.is_indexing = False
         self.stop_indexing = False
