@@ -300,6 +300,7 @@ This makes it significantly more versatile for diverse personal media collection
 - After adding new files, use **Refresh** to update the index
 - Renaming or moving the indexed folder does not break the cache
 - CPU-only mode works but indexing will be significantly slower
+- After indexing, if any files failed to process, Makimus creates `makimus_skipped_images.txt` and/or `makimus_skipped_videos.txt` inside your indexed folder. Each run appends to the file with a timestamp and the list of failed files — useful for identifying corrupt or unreadable files in your collection
 
 ---
 
