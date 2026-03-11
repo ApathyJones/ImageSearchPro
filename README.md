@@ -210,7 +210,7 @@ pip install -r requirements.txt
 ### Searching
 - **Text search:** Just type what you're looking for and hit Enter or click Search. You don't need exact filenames — describe the content. *"sunset over ocean"*, *"person in blue jacket"*, *"fight scene"* all work.
   - **Negative terms:** Put a minus sign before any word to exclude it — *"cat -dog"* finds cats without dogs in the image. Lower the Similarity Score to 0.10 or below when using negative terms for the best results.
-- **Image search:** Click the **Image** button and pick any image from your computer, or just **drag and drop an image directly onto the app** — Makimus will find everything in your collection that looks visually similar. Works for both images and video frames.
+- **Image search:** Click the **Image** button and pick any image from your computer, or just **drag and drop an image directly onto the results area** — Makimus will find everything in your collection that looks visually similar. Works for both images and video frames. Note: drop the image onto the main results canvas, not the control panel at the top.
 - The **Similarity Score** slider controls how strict the matching is. Lower it to get more results, raise it to get only close matches.
 
 ### Working with Results
@@ -243,7 +243,7 @@ pip install -r requirements.txt
 - 🎬 **Text-to-video search** — search your entire video library using text descriptions
 - 🎬 **Image-to-video search** — find video frames visually similar to a query image
 - ➖ **Negative search terms** — exclude unwanted content with minus prefixes (e.g. *"cat -dog"*). Lower the similarity score to 0.10 or below for best results
-- 🖱️ **Drag and drop image search** — drag any image from File Explorer directly onto the app to search by visual similarity instantly
+- 🖱️ **Drag and drop image search** — drag any image from File Explorer directly onto the results canvas to search by visual similarity instantly
 - 📷 **RAW photo support** — full indexing and display for ARW, CR2, NEF, DNG, ORF, RW2, RAF, PEF, SR2
 - 🎞️ **Video support** — MP4, MKV, MOV, AVI, WEBM, M4V, WMV, FLV, TS, MPG and more
 - ⚡ **GPU accelerated** — CUDA (NVIDIA), Apple MPS, DirectML (AMD/Intel on Windows)
