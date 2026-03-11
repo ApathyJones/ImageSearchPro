@@ -195,6 +195,11 @@ pip uninstall torch torchvision -y
 pip install -r requirements.txt
 ```
 
+> **Note:** `requirements.txt` includes `tkinterdnd2==0.4.3` which is required for drag and drop image search. If you're updating from an older version, make sure your venv is active, then install it manually with:
+> ```bash
+> pip install tkinterdnd2==0.4.3
+> ```
+
 > Your existing cache files are fully compatible — no re-indexing needed after an update.
 
 ---
