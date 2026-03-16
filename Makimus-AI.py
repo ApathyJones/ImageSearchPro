@@ -4318,7 +4318,7 @@ class ImageSearchApp:
             deleted, errors = [], []
             for p in to_del:
                 try:
-                    send2trash(p)
+                    send2trash(os.path.normpath(p))
                     deleted.append(p)
                 except Exception as e:
                     errors.append(f"{os.path.basename(p)}: {e}")
