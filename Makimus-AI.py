@@ -4213,7 +4213,8 @@ class ImageSearchApp:
         dup_canvas.bind_all("<MouseWheel>", _dup_scroll)
 
         delete_vars = {}     # abs_path -> BooleanVar
-        dialog_photos = {}   # keep ImageTk refs alive
+        dialog_photos = {}   # keep ImageTk refs alive — attached to dialog below
+        dialog.photos = dialog_photos  # prevent GC after function returns
 
         THUMB_W, THUMB_H = 150, 150
 
@@ -4511,7 +4512,8 @@ class ImageSearchApp:
         alb_canvas.bind_all("<MouseWheel>", _alb_scroll)
 
         ALBUM_THUMB = (160, 160)
-        album_photos = {}   # keep ImageTk refs alive
+        album_photos = {}   # keep ImageTk refs alive — attached to dialog below
+        dialog.photos = album_photos  # prevent GC after function returns
         COLS = 4
 
         for idx, info in enumerate(cluster_info):
