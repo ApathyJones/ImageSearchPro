@@ -744,6 +744,10 @@ class ImageSearchApp:
         # Queue for pending actions after stop
         self.pending_action = None
         
+        # Search history & saved presets
+        self.search_history = []   # list of {"query": str, "timestamp": str}
+        self.search_presets = []   # list of {"name": str, "query": str}
+
         self.build_ui()
         Thread(target=self.load_model, daemon=True).start()
 
@@ -938,6 +942,8 @@ class ImageSearchApp:
         ttk.Button(top, text="EXIT", command=self.force_quit, width=12, style="Danger.TButton").pack(side="left", padx=6)
 
         ttk.Button(top, text="Exclusions", command=self.open_exclusions_dialog, width=12).pack(side="left", padx=6)
+        ttk.Button(top, text="Duplicates", command=self.on_find_duplicates, width=12).pack(side="left", padx=4)
+        ttk.Button(top, text="Smart Albums", command=self.on_smart_albums, width=14).pack(side="left", padx=4)
 
         self.status_label = ttk.Label(top, text="Starting...", width=35, anchor="w")
         self.status_label.pack(side="left", padx=10)
@@ -968,6 +974,7 @@ class ImageSearchApp:
         
         ttk.Button(search_frame, text="Search", command=self.on_search_click, width=12, style="Accent.TButton").pack(side="left", padx=4)
         ttk.Button(search_frame, text="Image", command=self.on_image_click, width=10).pack(side="left", padx=4)
+        ttk.Button(search_frame, text="History", command=self.on_history_click, width=10).pack(side="left", padx=4)
 
         ctrl_frame = ttk.Frame(self.root, padding=8)
         ctrl_frame.pack(fill="x", padx=8, pady=4)
@@ -1319,6 +1326,7 @@ class ImageSearchApp:
         self.folder = folder
         self.excluded_folders = set()
         self.load_exclusions()
+        self.load_search_history()
         safe_print(f"\n{'='*60}\n[FOLDER] {folder}")
         
         cache_files = self.get_cache_filename()
@@ -2565,6 +2573,7 @@ class ImageSearchApp:
             return
 
         safe_print(f"\n[SEARCH] Starting search for: '{query}'")
+        self._save_to_history(query)
         self.search_thread = Thread(target=lambda: self.search(query, self.search_generation + 1), daemon=True)
         self.search_thread.start()
 
@@ -3841,6 +3850,740 @@ class ImageSearchApp:
             f"Exclusion Patterns:  {exclusions_str}"
         )
         messagebox.showinfo("Index Info", info)
+
+    # ─── Feature 1: Search History & Saved Presets ────────────────────────────
+
+    def get_history_filename(self):
+        return ".clip_search_history.json"
+
+    def load_search_history(self):
+        if not self.folder:
+            self.search_history = []
+            self.search_presets = []
+            return
+        path = os.path.join(self.folder, self.get_history_filename())
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.search_history = data.get("history", [])
+                self.search_presets = data.get("presets", [])
+                safe_print(f"[HISTORY] Loaded {len(self.search_history)} history entries, {len(self.search_presets)} presets")
+            except Exception as e:
+                safe_print(f"[HISTORY] Load error: {e}")
+                self.search_history = []
+                self.search_presets = []
+        else:
+            self.search_history = []
+            self.search_presets = []
+
+    def save_search_history(self):
+        if not self.folder:
+            return
+        path = os.path.join(self.folder, self.get_history_filename())
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump({"history": self.search_history, "presets": self.search_presets}, f, indent=2)
+        except Exception as e:
+            safe_print(f"[HISTORY] Save error: {e}")
+
+    def _save_to_history(self, query):
+        """Record a search query in history (most recent first, no duplicates)."""
+        if not query:
+            return
+        self.search_history = [h for h in self.search_history if h["query"] != query]
+        self.search_history.insert(0, {
+            "query": query,
+            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+        self.search_history = self.search_history[:50]
+        self.save_search_history()
+
+    def on_history_click(self):
+        self.open_history_dialog()
+
+    def open_history_dialog(self):
+        if not self.folder:
+            messagebox.showwarning("No Folder", "Please select a folder first.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Search History & Saved Presets")
+        dialog.geometry("520x500")
+        dialog.configure(bg=BG)
+        dialog.grab_set()
+
+        notebook = ttk.Notebook(dialog)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # ── Recent Searches tab ──
+        history_frame = tk.Frame(notebook, bg=BG)
+        notebook.add(history_frame, text="Recent Searches")
+
+        tk.Label(history_frame,
+                 text="Recent searches — double-click to run, or select and click Use:",
+                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(6, 2))
+
+        h_list_frame = tk.Frame(history_frame, bg=BG)
+        h_list_frame.pack(fill="both", expand=True, padx=8, pady=4)
+
+        h_scroll = tk.Scrollbar(h_list_frame)
+        h_scroll.pack(side="right", fill="y")
+        h_listbox = tk.Listbox(h_list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
+                               font=("Segoe UI", 10), yscrollcommand=h_scroll.set,
+                               highlightthickness=0, relief="flat")
+        h_listbox.pack(side="left", fill="both", expand=True)
+        h_scroll.config(command=h_listbox.yview)
+
+        for item in self.search_history:
+            h_listbox.insert(tk.END, f"{item['timestamp']}   {item['query']}")
+
+        def use_history():
+            sel = h_listbox.curselection()
+            if not sel:
+                return
+            query = self.search_history[sel[0]]["query"]
+            self.query_entry.delete(0, tk.END)
+            self.query_entry.insert(0, query)
+            dialog.destroy()
+            self.on_search_click()
+
+        def star_history():
+            sel = h_listbox.curselection()
+            if not sel:
+                return
+            query = self.search_history[sel[0]]["query"]
+            if any(p["query"] == query for p in self.search_presets):
+                messagebox.showinfo("Already Saved", "This query is already in your presets.", parent=dialog)
+                return
+            name_dlg = tk.Toplevel(dialog)
+            name_dlg.title("Save Preset")
+            name_dlg.geometry("320x130")
+            name_dlg.configure(bg=BG)
+            name_dlg.grab_set()
+            tk.Label(name_dlg, text="Preset name:", bg=BG, fg=FG).pack(padx=12, pady=(14, 4), anchor="w")
+            name_entry = tk.Entry(name_dlg, bg=CARD_BG, fg=FG, insertbackground=FG,
+                                  font=("Segoe UI", 10), relief="flat",
+                                  highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
+            name_entry.insert(0, query)
+            name_entry.pack(fill="x", padx=12)
+            name_entry.select_range(0, "end")
+
+            def do_save():
+                name = name_entry.get().strip() or query
+                self.search_presets.append({"name": name, "query": query})
+                self.save_search_history()
+                name_dlg.destroy()
+                messagebox.showinfo("Saved", f"Saved preset: {name}", parent=dialog)
+
+            name_entry.bind("<Return>", lambda e: do_save())
+            ttk.Button(name_dlg, text="Save", command=do_save).pack(pady=8)
+
+        def clear_history():
+            if messagebox.askyesno("Clear History", "Clear all recent search history?", parent=dialog):
+                self.search_history = []
+                self.save_search_history()
+                h_listbox.delete(0, tk.END)
+
+        h_btn_frame = tk.Frame(history_frame, bg=BG)
+        h_btn_frame.pack(fill="x", padx=8, pady=4)
+        ttk.Button(h_btn_frame, text="Use", command=use_history, width=10,
+                   style="Accent.TButton").pack(side="left", padx=4)
+        ttk.Button(h_btn_frame, text="★ Save as Preset", command=star_history, width=16).pack(side="left", padx=4)
+        ttk.Button(h_btn_frame, text="Clear History", command=clear_history, width=14,
+                   style="Danger.TButton").pack(side="right", padx=4)
+
+        h_listbox.bind("<Double-Button-1>", lambda e: use_history())
+
+        # ── Saved Presets tab ──
+        presets_frame = tk.Frame(notebook, bg=BG)
+        notebook.add(presets_frame, text="Saved Presets")
+
+        tk.Label(presets_frame, text="Saved preset searches — double-click to run:",
+                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(6, 2))
+
+        p_list_frame = tk.Frame(presets_frame, bg=BG)
+        p_list_frame.pack(fill="both", expand=True, padx=8, pady=4)
+
+        p_scroll = tk.Scrollbar(p_list_frame)
+        p_scroll.pack(side="right", fill="y")
+        p_listbox = tk.Listbox(p_list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
+                               font=("Segoe UI", 10), yscrollcommand=p_scroll.set,
+                               highlightthickness=0, relief="flat")
+        p_listbox.pack(side="left", fill="both", expand=True)
+        p_scroll.config(command=p_listbox.yview)
+
+        def refresh_presets():
+            p_listbox.delete(0, tk.END)
+            for p in self.search_presets:
+                label = f"★  {p['name']}" if p['name'] == p['query'] else f"★  {p['name']}   ({p['query']})"
+                p_listbox.insert(tk.END, label)
+
+        refresh_presets()
+
+        def use_preset():
+            sel = p_listbox.curselection()
+            if not sel:
+                return
+            query = self.search_presets[sel[0]]["query"]
+            self.query_entry.delete(0, tk.END)
+            self.query_entry.insert(0, query)
+            dialog.destroy()
+            self.on_search_click()
+
+        def delete_preset():
+            sel = p_listbox.curselection()
+            if not sel:
+                return
+            del self.search_presets[sel[0]]
+            self.save_search_history()
+            refresh_presets()
+
+        p_btn_frame = tk.Frame(presets_frame, bg=BG)
+        p_btn_frame.pack(fill="x", padx=8, pady=4)
+        ttk.Button(p_btn_frame, text="Use", command=use_preset, width=10,
+                   style="Accent.TButton").pack(side="left", padx=4)
+        ttk.Button(p_btn_frame, text="Delete", command=delete_preset, width=10,
+                   style="Danger.TButton").pack(side="left", padx=4)
+
+        p_listbox.bind("<Double-Button-1>", lambda e: use_preset())
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 8))
+
+    # ─── Feature 2: Duplicate & Near-Duplicate Finder ─────────────────────────
+
+    def on_find_duplicates(self):
+        if self.image_embeddings is None or len(self.image_paths) < 2:
+            messagebox.showwarning("Not Ready", "Please index images first (at least 2 images required).")
+            return
+        if self.is_indexing:
+            messagebox.showwarning("Busy", "Please wait for indexing to complete.")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Find Duplicates")
+        dialog.geometry("420x200")
+        dialog.configure(bg=BG)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Similarity threshold for duplicate detection:",
+                 bg=BG, fg=FG, font=("Segoe UI", 10)).pack(padx=16, pady=(16, 4))
+        tk.Label(dialog,
+                 text="0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar",
+                 bg=BG, fg="#888888", font=("Segoe UI", 8)).pack(padx=16, pady=(0, 8))
+
+        threshold_var = tk.DoubleVar(value=0.97)
+        tk.Scale(dialog, from_=0.80, to=0.999, resolution=0.001, orient="horizontal",
+                 variable=threshold_var, length=320, bg=PANEL_BG, fg=FG,
+                 troughcolor=BORDER, highlightthickness=0).pack(padx=16)
+
+        n_images = len(self.image_paths)
+        tk.Label(dialog, text=f"{n_images:,} images in index",
+                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(pady=4)
+
+        def start_scan():
+            threshold = threshold_var.get()
+            dialog.destroy()
+            self.update_status(f"Scanning for duplicates (threshold={threshold:.3f})...", "orange")
+            self.progress.config(mode='indeterminate')
+            self.progress.start()
+            Thread(target=lambda: self._find_duplicates_worker(threshold), daemon=True).start()
+
+        btn_frame = tk.Frame(dialog, bg=BG)
+        btn_frame.pack(pady=8)
+        ttk.Button(btn_frame, text="Find Duplicates", command=start_scan,
+                   style="Accent.TButton", width=16).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side="left", padx=4)
+
+    def _find_duplicates_worker(self, threshold):
+        """Find near-duplicate image groups using embedding cosine similarity."""
+        try:
+            embeddings = self.image_embeddings
+            n = len(self.image_paths)
+            safe_print(f"[DUPES] Scanning {n:,} images, threshold={threshold:.3f}...")
+
+            # Union-Find for grouping
+            parent = list(range(n))
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(x, y):
+                px, py = find(x), find(y)
+                if px != py:
+                    parent[px] = py
+
+            chunk_size = 500
+            total_chunks = (n + chunk_size - 1) // chunk_size
+            pair_count = 0
+
+            for chunk_idx in range(total_chunks):
+                start = chunk_idx * chunk_size
+                end = min(start + chunk_size, n)
+                chunk = embeddings[start:end]       # (K, D)
+                sims = chunk @ embeddings.T         # (K, N)
+
+                rows, cols = np.where(sims >= threshold)
+                for r, c in zip(rows.tolist(), cols.tolist()):
+                    actual_r = start + r
+                    if actual_r < c:
+                        union(actual_r, c)
+                        pair_count += 1
+
+                pct = int((chunk_idx + 1) / total_chunks * 100)
+                self._safe_after(0, lambda p=pct: self.progress_label.config(
+                    text=f"Scanning for duplicates... {p}%"))
+
+            # Collect groups
+            groups = {}
+            for i in range(n):
+                root = find(i)
+                groups.setdefault(root, []).append(i)
+
+            dup_groups = [sorted(members) for members in groups.values() if len(members) >= 2]
+            dup_groups.sort(key=lambda g: len(g), reverse=True)
+
+            safe_print(f"[DUPES] Found {len(dup_groups)} groups ({pair_count} pairs)")
+
+            self._safe_after(0, lambda: self.progress.stop())
+            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.progress_label.config(text=""))
+
+            if not dup_groups:
+                self._safe_after(0, lambda: self.update_status("No duplicates found", "green"))
+                self._safe_after(0, lambda: messagebox.showinfo(
+                    "No Duplicates",
+                    f"No duplicate images found at threshold {threshold:.3f}.\n\n"
+                    f"Try lowering the threshold to find more similar images."))
+                return
+
+            total_redundant = sum(len(g) - 1 for g in dup_groups)
+            self._safe_after(0, lambda: self.update_status(
+                f"Found {len(dup_groups)} duplicate groups ({total_redundant} redundant files)", ORANGE))
+            self._safe_after(0, lambda: self.open_duplicates_dialog(dup_groups))
+
+        except Exception as e:
+            safe_print(f"[DUPES] Error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.stop())
+            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.update_status("Duplicate scan failed", "red"))
+
+    def open_duplicates_dialog(self, dup_groups):
+        """Display duplicate groups with checkboxes for selective deletion."""
+        dialog = tk.Toplevel(self.root)
+        total_redundant = sum(len(g) - 1 for g in dup_groups)
+        dialog.title(f"Duplicate Finder — {len(dup_groups)} groups, {total_redundant} redundant files")
+        dialog.geometry("920x660")
+        dialog.configure(bg=BG)
+
+        # Header
+        hdr = tk.Frame(dialog, bg=PANEL_BG)
+        hdr.pack(fill="x", padx=8, pady=6)
+        tk.Label(hdr,
+                 text=f"{len(dup_groups)} duplicate groups   •   {total_redundant} potentially redundant files",
+                 bg=PANEL_BG, fg=FG, font=("Segoe UI", 10, "bold")).pack(side="left", padx=8)
+        tk.Label(hdr, text="Checked items will be deleted. First image in each group is kept by default.",
+                 bg=PANEL_BG, fg="#888888", font=("Segoe UI", 9)).pack(side="left", padx=8)
+
+        # Scrollable area
+        container = tk.Frame(dialog, bg=BG)
+        container.pack(fill="both", expand=True, padx=8, pady=4)
+
+        dup_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        dup_scroll = ttk.Scrollbar(container, orient="vertical", command=dup_canvas.yview)
+        inner = tk.Frame(dup_canvas, bg=BG)
+        canvas_win = dup_canvas.create_window((0, 0), window=inner, anchor="nw")
+        dup_canvas.configure(yscrollcommand=dup_scroll.set)
+        dup_canvas.pack(side="left", fill="both", expand=True)
+        dup_scroll.pack(side="right", fill="y")
+
+        inner.bind("<Configure>", lambda e: dup_canvas.configure(scrollregion=dup_canvas.bbox("all")))
+        dup_canvas.bind("<Configure>", lambda e: dup_canvas.itemconfig(canvas_win, width=e.width))
+
+        def _dup_scroll(e):
+            try:
+                dup_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+        dup_canvas.bind_all("<MouseWheel>", _dup_scroll)
+
+        delete_vars = {}     # abs_path -> BooleanVar
+        dialog_photos = {}   # keep ImageTk refs alive
+
+        THUMB_W, THUMB_H = 150, 150
+
+        for grp_idx, group in enumerate(dup_groups):
+            grp_frame = tk.Frame(inner, bg=CARD_BG, bd=1, relief="solid")
+            grp_frame.pack(fill="x", padx=6, pady=4)
+
+            grp_hdr = tk.Frame(grp_frame, bg=PANEL_BG)
+            grp_hdr.pack(fill="x")
+            tk.Label(grp_hdr,
+                     text=f"Group {grp_idx + 1}  —  {len(group)} similar images",
+                     bg=PANEL_BG, fg=FG, font=("Segoe UI", 9, "bold")).pack(side="left", padx=8, pady=3)
+
+            def _mark_group(g=group):
+                for k, i in enumerate(g):
+                    ap = os.path.join(self.folder, self.image_paths[i])
+                    if ap in delete_vars:
+                        delete_vars[ap].set(k > 0)
+
+            ttk.Button(grp_hdr, text="Keep First, Delete Rest",
+                       command=_mark_group, width=22).pack(side="right", padx=4, pady=2)
+
+            thumbs_row = tk.Frame(grp_frame, bg=CARD_BG)
+            thumbs_row.pack(fill="x", padx=4, pady=4)
+
+            for k, img_idx in enumerate(group):
+                rel_path = self.image_paths[img_idx]
+                abs_path = os.path.join(self.folder, rel_path)
+
+                cell = tk.Frame(thumbs_row, bg=CARD_BG)
+                cell.pack(side="left", padx=6)
+
+                try:
+                    if rel_path.lower().endswith(RAW_EXTS):
+                        import rawpy
+                        with rawpy.imread(abs_path) as raw:
+                            rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
+                        img = Image.fromarray(rgb)
+                    else:
+                        safe_p = get_safe_path(abs_path)
+                        img = Image.open(safe_p)
+                        img.load()
+                    img.thumbnail((THUMB_W, THUMB_H))
+                    photo = ImageTk.PhotoImage(img)
+                    dialog_photos[abs_path] = photo
+                    tk.Label(cell, image=photo, bg=CARD_BG).pack()
+                except Exception:
+                    tk.Label(cell, text="[no preview]", bg=CARD_BG, fg=FG,
+                             width=16, height=7).pack()
+
+                name = os.path.basename(rel_path)
+                if len(name) > 22:
+                    name = name[:19] + "..."
+                tk.Label(cell, text=name, bg=CARD_BG, fg=FG,
+                         font=("Segoe UI", 8), wraplength=150).pack()
+
+                try:
+                    fsize = os.path.getsize(abs_path)
+                    size_str = f"{fsize/1024:.0f} KB" if fsize < 1024*1024 else f"{fsize/1024/1024:.1f} MB"
+                    tk.Label(cell, text=size_str, bg=CARD_BG, fg="#888888",
+                             font=("Segoe UI", 8)).pack()
+                except Exception:
+                    pass
+
+                var = tk.BooleanVar(value=(k > 0))
+                delete_vars[abs_path] = var
+                tk.Checkbutton(cell, text="Delete", variable=var,
+                               bg=CARD_BG, fg=DANGER, selectcolor=BG,
+                               activebackground=CARD_BG, font=("Segoe UI", 8)).pack()
+
+        # Bottom bar
+        bottom = tk.Frame(dialog, bg=PANEL_BG)
+        bottom.pack(fill="x", padx=8, pady=6)
+
+        count_label = tk.Label(bottom, text="", bg=PANEL_BG, fg=FG, font=("Segoe UI", 9))
+        count_label.pack(side="left", padx=8)
+
+        def _update_count(*_):
+            n = sum(1 for v in delete_vars.values() if v.get())
+            count_label.config(text=f"{n} file(s) checked for deletion")
+
+        for v in delete_vars.values():
+            v.trace_add("write", _update_count)
+        _update_count()
+
+        def delete_checked():
+            to_del = [p for p, v in delete_vars.items() if v.get() and os.path.exists(p)]
+            if not to_del:
+                messagebox.showinfo("Nothing to Delete", "No files are checked for deletion.", parent=dialog)
+                return
+            if not messagebox.askyesno("Confirm Delete",
+                    f"Move {len(to_del)} file(s) to the Recycle Bin?\n\n"
+                    f"Files can be restored from the Recycle Bin.", parent=dialog):
+                return
+            try:
+                from send2trash import send2trash
+            except ImportError:
+                messagebox.showerror("Missing Dependency",
+                    "send2trash is not installed.\npip install send2trash", parent=dialog)
+                return
+            deleted, errors = [], []
+            for p in to_del:
+                try:
+                    send2trash(p)
+                    deleted.append(p)
+                except Exception as e:
+                    errors.append(f"{os.path.basename(p)}: {e}")
+            if deleted:
+                self._remove_paths_from_index(deleted)
+                self._remove_cards_from_ui(deleted)
+                for p in deleted:
+                    delete_vars.pop(p, None)
+                _update_count()
+            if errors:
+                messagebox.showerror("Errors", "\n".join(errors[:5]), parent=dialog)
+            if deleted:
+                messagebox.showinfo("Done",
+                    f"Moved {len(deleted)} file(s) to Recycle Bin.", parent=dialog)
+
+        ttk.Button(bottom, text="Delete Checked Files", command=delete_checked,
+                   style="Danger.TButton", width=20).pack(side="right", padx=8, pady=4)
+        ttk.Button(bottom, text="Close", command=dialog.destroy, width=10).pack(side="right", padx=4, pady=4)
+
+        def _on_dup_close():
+            try:
+                dup_canvas.unbind_all("<MouseWheel>")
+            except Exception:
+                pass
+            dialog.destroy()
+        dialog.protocol("WM_DELETE_WINDOW", _on_dup_close)
+
+    # ─── Feature 3: Smart Albums (Auto-Collections via Clustering) ─────────────
+
+    def _kmeans_numpy(self, embeddings, n_clusters, max_iter=30):
+        """K-Means clustering on L2-normalized embeddings (cosine similarity)."""
+        n = len(embeddings)
+        if n <= n_clusters:
+            return list(range(n)), embeddings.copy()
+
+        rng = np.random.default_rng(42)
+        idx = rng.choice(n, n_clusters, replace=False)
+        centroids = embeddings[idx].copy()
+        labels = np.zeros(n, dtype=np.int32)
+
+        for iteration in range(max_iter):
+            sims = embeddings @ centroids.T          # (N, K)
+            new_labels = np.argmax(sims, axis=1).astype(np.int32)
+            if np.array_equal(new_labels, labels) and iteration > 0:
+                break
+            labels = new_labels
+            new_centroids = np.zeros_like(centroids)
+            for k in range(n_clusters):
+                mask = labels == k
+                if mask.any():
+                    c = embeddings[mask].mean(axis=0)
+                    norm = np.linalg.norm(c)
+                    new_centroids[k] = c / norm if norm > 0 else c
+                else:
+                    new_centroids[k] = embeddings[rng.integers(n)]
+            centroids = new_centroids
+
+        return labels.tolist(), centroids
+
+    def on_smart_albums(self):
+        if self.image_embeddings is None or len(self.image_paths) < 2:
+            messagebox.showwarning("Not Ready", "Please index images first.")
+            return
+        if self.is_indexing:
+            messagebox.showwarning("Busy", "Please wait for indexing to complete.")
+            return
+
+        n_images = len(self.image_paths)
+        default_clusters = min(15, max(3, n_images // 100))
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Smart Albums — Auto-Collections")
+        dialog.geometry("400x230")
+        dialog.configure(bg=BG)
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        tk.Label(dialog,
+                 text="Automatically group your images into thematic albums\nusing AI clustering on their visual embeddings.",
+                 bg=BG, fg=FG, font=("Segoe UI", 10), justify="center").pack(padx=16, pady=(16, 8))
+
+        spin_frame = tk.Frame(dialog, bg=BG)
+        spin_frame.pack()
+        tk.Label(spin_frame, text="Number of albums:", bg=BG, fg=FG,
+                 font=("Segoe UI", 10)).pack(side="left", padx=4)
+        n_clusters_var = tk.IntVar(value=default_clusters)
+        tk.Spinbox(spin_frame, from_=2, to=50, textvariable=n_clusters_var,
+                   width=6, bg=CARD_BG, fg=FG, insertbackground=FG,
+                   buttonbackground=PANEL_BG).pack(side="left", padx=4)
+
+        tk.Label(dialog, text=f"{n_images:,} images will be clustered",
+                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(pady=6)
+
+        def start_clustering():
+            n_clusters = n_clusters_var.get()
+            dialog.destroy()
+            self.update_status(f"Building {n_clusters} smart albums...", "orange")
+            self.progress.config(mode='indeterminate')
+            self.progress.start()
+            Thread(target=lambda: self._smart_albums_worker(n_clusters), daemon=True).start()
+
+        btn_frame = tk.Frame(dialog, bg=BG)
+        btn_frame.pack(pady=4)
+        ttk.Button(btn_frame, text="Build Smart Albums", command=start_clustering,
+                   style="Accent.TButton", width=18).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side="left", padx=4)
+
+    def _smart_albums_worker(self, n_clusters):
+        """Cluster images into smart albums using K-Means."""
+        try:
+            embeddings = self.image_embeddings
+            n = len(self.image_paths)
+            safe_print(f"[ALBUMS] Clustering {n:,} images into {n_clusters} albums...")
+            self._safe_after(0, lambda: self.progress_label.config(text="Running K-Means clustering..."))
+
+            try:
+                from sklearn.cluster import KMeans
+                km = KMeans(n_clusters=n_clusters, random_state=42, n_init=5, max_iter=100)
+                labels = km.fit_predict(embeddings).tolist()
+                centroids = km.cluster_centers_
+                norms = np.linalg.norm(centroids, axis=1, keepdims=True)
+                centroids = centroids / np.maximum(norms, 1e-8)
+                safe_print("[ALBUMS] Used sklearn KMeans")
+            except ImportError:
+                safe_print("[ALBUMS] sklearn not found, using numpy K-Means")
+                labels, centroids = self._kmeans_numpy(embeddings, n_clusters)
+
+            cluster_info = []
+            for k in range(n_clusters):
+                members = [i for i, lbl in enumerate(labels) if lbl == k]
+                if not members:
+                    continue
+                centroid = centroids[k]
+                member_embs = embeddings[members]
+                sims = member_embs @ centroid
+                best_idx = members[int(np.argmax(sims))]
+                cluster_info.append({
+                    "cluster_id": k,
+                    "members": members,
+                    "representative": best_idx,
+                    "size": len(members)
+                })
+
+            cluster_info.sort(key=lambda x: x["size"], reverse=True)
+            safe_print(f"[ALBUMS] Built {len(cluster_info)} albums")
+
+            self._safe_after(0, lambda: self.progress.stop())
+            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.progress_label.config(text=""))
+            self._safe_after(0, lambda: self.update_status(
+                f"Smart Albums ready: {len(cluster_info)} albums", "green"))
+            self._safe_after(0, lambda: self.open_smart_albums_dialog(cluster_info))
+
+        except Exception as e:
+            safe_print(f"[ALBUMS] Error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.stop())
+            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.update_status("Smart Albums failed", "red"))
+
+    def open_smart_albums_dialog(self, cluster_info):
+        """Display smart albums as a grid of representative thumbnails."""
+        dialog = tk.Toplevel(self.root)
+        dialog.title(f"Smart Albums — {len(cluster_info)} Auto-Collections")
+        dialog.geometry("920x660")
+        dialog.configure(bg=BG)
+
+        tk.Label(dialog,
+                 text="AI-generated collections based on visual similarity. Click 'View Album' to browse a collection.",
+                 bg=PANEL_BG, fg=FG, font=("Segoe UI", 9), padx=8, pady=5).pack(fill="x")
+
+        container = tk.Frame(dialog, bg=BG)
+        container.pack(fill="both", expand=True, padx=8, pady=4)
+
+        alb_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
+        alb_scroll = ttk.Scrollbar(container, orient="vertical", command=alb_canvas.yview)
+        grid_frame = tk.Frame(alb_canvas, bg=BG)
+        canvas_win = alb_canvas.create_window((0, 0), window=grid_frame, anchor="nw")
+        alb_canvas.configure(yscrollcommand=alb_scroll.set)
+        alb_canvas.pack(side="left", fill="both", expand=True)
+        alb_scroll.pack(side="right", fill="y")
+
+        grid_frame.bind("<Configure>", lambda e: alb_canvas.configure(scrollregion=alb_canvas.bbox("all")))
+        alb_canvas.bind("<Configure>", lambda e: alb_canvas.itemconfig(canvas_win, width=e.width))
+
+        def _alb_scroll(e):
+            try:
+                alb_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+        alb_canvas.bind_all("<MouseWheel>", _alb_scroll)
+
+        ALBUM_THUMB = (160, 160)
+        album_photos = {}   # keep ImageTk refs alive
+        COLS = 4
+
+        for idx, info in enumerate(cluster_info):
+            rep_idx = info["representative"]
+            rel_path = self.image_paths[rep_idx]
+            abs_path = os.path.join(self.folder, rel_path)
+            row, col = divmod(idx, COLS)
+
+            card = tk.Frame(grid_frame, bg=CARD_BG, bd=1, relief="solid")
+            card.grid(row=row, column=col, padx=6, pady=6)
+
+            try:
+                if rel_path.lower().endswith(RAW_EXTS):
+                    import rawpy
+                    with rawpy.imread(abs_path) as raw:
+                        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
+                    img = Image.fromarray(rgb)
+                else:
+                    safe_p = get_safe_path(abs_path)
+                    img = Image.open(safe_p)
+                    img.load()
+                img.thumbnail(ALBUM_THUMB)
+                photo = ImageTk.PhotoImage(img)
+                album_photos[idx] = photo
+                tk.Label(card, image=photo, bg=CARD_BG).pack(pady=4)
+            except Exception:
+                tk.Label(card, text="[preview unavailable]", bg=CARD_BG, fg=FG,
+                         width=20, height=8).pack(pady=4)
+
+            tk.Label(card, text=f"Album {idx + 1}", bg=CARD_BG, fg=ACCENT_SECONDARY,
+                     font=("Segoe UI", 9, "bold")).pack()
+            tk.Label(card, text=f"{info['size']:,} images", bg=CARD_BG, fg=FG,
+                     font=("Segoe UI", 9)).pack()
+
+            def view_album(members=info["members"], album_num=idx + 1):
+                dialog.destroy()
+                self.cancel_search(clear_ui=True)
+                album_results = [
+                    (1.0, os.path.join(self.folder, self.image_paths[i]), "image", {})
+                    for i in members
+                ]
+                self.all_search_results = album_results
+                self.total_found = len(album_results)
+                self.show_more_offset = 0
+                self.update_status(f"Smart Album {album_num}: {len(album_results)} images", "green")
+                cw = max(self.canvas.winfo_width(), CELL_WIDTH)
+                self.render_cols = max(1, cw // CELL_WIDTH)
+                initial_n = max(10, self.top_n_var.get())
+                first_batch = album_results[:initial_n]
+                self.show_more_offset = len(first_batch)
+                self.stop_search = False
+                self.is_searching = True
+                self.start_thumbnail_loader(first_batch, self.search_generation)
+
+            ttk.Button(card, text="View Album", command=view_album).pack(pady=(2, 6))
+
+        bottom = tk.Frame(dialog, bg=PANEL_BG)
+        bottom.pack(fill="x", padx=8, pady=6)
+        tk.Label(bottom,
+                 text=f"Tip: Rebuild with more or fewer albums to change granularity.",
+                 bg=PANEL_BG, fg="#888888", font=("Segoe UI", 8)).pack(side="left", padx=8)
+
+        def _on_alb_close():
+            try:
+                alb_canvas.unbind_all("<MouseWheel>")
+            except Exception:
+                pass
+            dialog.destroy()
+
+        ttk.Button(bottom, text="Close", command=_on_alb_close, width=10).pack(side="right", padx=8, pady=4)
+        dialog.protocol("WM_DELETE_WINDOW", _on_alb_close)
+
 
 if __name__ == "__main__":
     print("=" * 60)
