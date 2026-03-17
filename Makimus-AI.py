@@ -57,7 +57,21 @@ def get_system_vram():
     except Exception:
         pass
 
-    # Method 2: Windows PowerShell CimInstance (works on Win10/11, replaces deprecated wmic)
+    # Method 2: nvidia-smi (most accurate for NVIDIA GPUs — avoids WMI 32-bit overflow)
+    if os.name == 'nt' or sys.platform.startswith('linux'):
+        try:
+            cmd = ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits']
+            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                             creationflags=0x08000000 if os.name == 'nt' else 0
+                                             ).decode('utf-8', errors='ignore').strip()
+            # output is VRAM in MiB, one line per GPU — take the largest
+            values = [int(s) for s in re.findall(r'\d+', output) if int(s) > 0]
+            if values:
+                return max(values) * 1024 * 1024  # MiB → bytes
+        except Exception:
+            pass
+
+    # Method 3: Windows PowerShell CimInstance fallback (32-bit field — overflows for >4 GB GPUs)
     if os.name == 'nt':
         try:
             cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command',
