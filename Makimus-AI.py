@@ -1620,6 +1620,11 @@ class ImageSearchApp(QMainWindow):
         self.btn_model.setToolTip("Click to change the active embedding model")
         self.btn_model.clicked.connect(self.open_model_selector)
         toolbar_layout.addWidget(self.btn_model)
+
+        btn_unload = QPushButton("Unload Model")
+        btn_unload.setToolTip("Move the active model off the GPU to free VRAM")
+        btn_unload.clicked.connect(self.on_unload_model)
+        toolbar_layout.addWidget(btn_unload)
         toolbar_layout.addSpacing(8)
 
         self.btn_stop = QPushButton("STOP INDEX")
@@ -2007,6 +2012,41 @@ class ImageSearchApp(QMainWindow):
             self._safe_after(0, lambda: self.device_label.setText("Load Failed"))
             self._safe_after(0, lambda m=display_msg: QMessageBox.critical(self, "Error", m))
         self.model_loading = False
+
+    def on_unload_model(self):
+        """Move the active model off the GPU and free all VRAM it holds."""
+        if self.model_loading:
+            QMessageBox.information(self, "Model Loading",
+                                    "Please wait for the model to finish loading.")
+            return
+        if not self.is_safe_to_act(action_name="unload model"):
+            return
+        if self.clip_model is None:
+            QMessageBox.information(self, "No Model Loaded", "No model is currently loaded.")
+            return
+        try:
+            import torch, gc
+            old_model = self.clip_model
+            self.clip_model = None
+            inner = getattr(old_model, 'model', None)
+            if inner is not None and hasattr(inner, 'cpu'):
+                inner.cpu()
+            for attr in ('visual_model', 'text_model', '_model'):
+                sub = getattr(old_model, attr, None)
+                if sub is not None and hasattr(sub, 'cpu'):
+                    sub.cpu()
+            if hasattr(old_model, '_destroy_onnx_session'):
+                old_model._destroy_onnx_session()
+            del old_model
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            self.update_status("Model unloaded", "orange")
+            self.device_label.setText("Unloaded")
+            self._update_text_search_state()
+        except Exception as e:
+            QMessageBox.warning(self, "Unload Error", f"Error while unloading model:\n{e}")
 
     # ---- Model selection ----
 
