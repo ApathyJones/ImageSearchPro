@@ -1341,10 +1341,10 @@ class ImageSearchApp(QMainWindow):
 
     def load_model(self):
         self.model_loading = True
-        QTimer.singleShot(0, lambda: self.update_status("Loading model...", "orange"))
+        self._safe_after(0, lambda: self.update_status("Loading model...", "orange"))
         try:
             self.clip_model = HybridCLIPModel()
-            QTimer.singleShot(0, lambda: self.update_status("Ready", "green"))
+            self._safe_after(0, lambda: self.update_status("Ready", "green"))
             device = self.clip_model.device_name
             batch = BATCH_SIZE
             if "CUDA" in device:
@@ -1355,7 +1355,7 @@ class ImageSearchApp(QMainWindow):
                 short = f"DirectML  •  Batch {batch}"
             else:
                 short = f"CPU  •  Batch {batch}"
-            QTimer.singleShot(0, lambda s=short: self.device_label.setText(s))
+            self._safe_after(0, lambda s=short: self.device_label.setText(s))
             safe_print(f"[LOAD] Success!\n")
         except Exception as e:
             safe_print(f"[ERROR] {e}")
@@ -1376,9 +1376,9 @@ class ImageSearchApp(QMainWindow):
                 display_msg = hint
             else:
                 display_msg = f"Failed to load model\n{err_msg}"
-            QTimer.singleShot(0, lambda: self.update_status("Load Failed", "red"))
-            QTimer.singleShot(0, lambda: self.device_label.setText("Load Failed"))
-            QTimer.singleShot(0, lambda m=display_msg: QMessageBox.critical(self, "Error", m))
+            self._safe_after(0, lambda: self.update_status("Load Failed", "red"))
+            self._safe_after(0, lambda: self.device_label.setText("Load Failed"))
+            self._safe_after(0, lambda m=display_msg: QMessageBox.critical(self, "Error", m))
         self.model_loading = False
 
     # ---- Action handlers ----
@@ -2700,19 +2700,19 @@ class ImageSearchApp(QMainWindow):
         
         safe_print(f"[SEARCH] Generation: {generation}, Query: '{query}'")
         
-        QTimer.singleShot(0, self.clear_results)
+        self._safe_after(0, self.clear_results)
         self.total_found = 0
-        
+
         if not self.is_indexing:
-            QTimer.singleShot(0, lambda: self.update_status("Searching...", "orange"))
-            QTimer.singleShot(0, lambda: self.progress.setRange(0, 0))
-            
+            self._safe_after(0, lambda: self.update_status("Searching...", "orange"))
+            self._safe_after(0, lambda: self.progress.setRange(0, 0))
+
         try:
             positive_terms, negative_terms = self.parse_query(query)
 
             if not positive_terms:
                 safe_print("[SEARCH] No positive search terms found")
-                QTimer.singleShot(0, lambda: self.update_status("No positive search terms", "orange"))
+                self._safe_after(0, lambda: self.update_status("No positive search terms", "orange"))
                 self.is_searching = False
                 return
 
@@ -2724,7 +2724,7 @@ class ImageSearchApp(QMainWindow):
 
             if text_embed is None or text_embed.size == 0:
                 safe_print("[SEARCH ERROR] Text encoding returned empty array")
-                QTimer.singleShot(0, lambda: self.update_status("Search failed - text encoding error", "red"))
+                self._safe_after(0, lambda: self.update_status("Search failed - text encoding error", "red"))
                 self.is_searching = False
                 return
 
@@ -2749,7 +2749,7 @@ class ImageSearchApp(QMainWindow):
                 return
 
             if not self.is_indexing:
-                QTimer.singleShot(0, lambda: self.progress.setRange(0, 100))
+                self._safe_after(0, lambda: self.progress.setRange(0, 100))
 
             show_images = self.show_images_cb.isChecked()
             show_videos = self.show_videos_cb.isChecked()
@@ -2800,7 +2800,7 @@ class ImageSearchApp(QMainWindow):
                 safe_print(f"[SEARCH] Displaying first {len(first_batch)} of {self.total_found} results")
 
                 if self.total_found < 6:
-                    QTimer.singleShot(500, self._maybe_suggest_lower_score)
+                    self._safe_after(500, self._maybe_suggest_lower_score)
 
                 vp_width = self.scroll_area.viewport().width()
                 cw = max(vp_width, CELL_WIDTH)
@@ -2809,16 +2809,16 @@ class ImageSearchApp(QMainWindow):
                 self.start_thumbnail_loader(first_batch, generation)
             else:
                 safe_print("[SEARCH] No results found")
-                QTimer.singleShot(0, lambda: self.update_status("No results found", "green"))
-                QTimer.singleShot(100, self._maybe_suggest_lower_score)
+                self._safe_after(0, lambda: self.update_status("No results found", "green"))
+                self._safe_after(100, self._maybe_suggest_lower_score)
                 self.is_searching = False
-                
+
         except Exception as e:
             if not self.stop_search:
                 safe_print(f"[SEARCH ERROR] {e}")
                 import traceback
                 traceback.print_exc()
-                QTimer.singleShot(0, lambda: self.update_status("Search error - check console", "red"))
+                self._safe_after(0, lambda: self.update_status("Search error - check console", "red"))
             self.is_searching = False
 
     def image_search(self):
@@ -2841,13 +2841,13 @@ class ImageSearchApp(QMainWindow):
         self.stop_search = False
         self.thumbnail_count = 0
         
-        QTimer.singleShot(0, self.clear_results)
-        
+        self._safe_after(0, self.clear_results)
+
         vp_width = self.scroll_area.viewport().width()
         cw = max(vp_width, CELL_WIDTH)
         self.render_cols = max(1, cw // CELL_WIDTH)
-        
-        QTimer.singleShot(0, lambda: self.update_status("Searching by image...", "orange"))
+
+        self._safe_after(0, lambda: self.update_status("Searching by image...", "orange"))
         
         try:
             img = open_image(path)
@@ -2893,12 +2893,12 @@ class ImageSearchApp(QMainWindow):
                 self.show_more_offset = len(first_batch)
 
                 if self.total_found < 6:
-                    QTimer.singleShot(500, self._maybe_suggest_lower_score)
+                    self._safe_after(500, self._maybe_suggest_lower_score)
 
                 self.start_thumbnail_loader(first_batch, generation)
             else:
-                QTimer.singleShot(0, lambda: self.update_status("No matches", "green"))
-                QTimer.singleShot(100, self._maybe_suggest_lower_score)
+                self._safe_after(0, lambda: self.update_status("No matches", "green"))
+                self._safe_after(100, self._maybe_suggest_lower_score)
                 self.is_searching = False
         except Exception as e:
             safe_print(f"[IMAGE SEARCH ERROR] {e}")
@@ -2911,7 +2911,7 @@ class ImageSearchApp(QMainWindow):
         t = Thread(target=self.load_thumbnails_worker, args=(results, generation), daemon=True)
         self._thumbnail_worker_thread = t
         t.start()
-        QTimer.singleShot(10, lambda: self.check_thumbnail_queue(generation))
+        self._safe_after(10, lambda: self.check_thumbnail_queue(generation))
 
     def load_thumbnails_worker(self, results, generation):
         loaded = 0
@@ -2949,7 +2949,7 @@ class ImageSearchApp(QMainWindow):
                     except ImportError:
                         if not getattr(self, '_cv2_missing_warned', False):
                             self._cv2_missing_warned = True
-                            QTimer.singleShot(0, lambda: QMessageBox.warning(
+                            self._safe_after(0, lambda: QMessageBox.warning(
                                 self,
                                 "Missing Dependency",
                                 "OpenCV is not installed - video thumbnails cannot be displayed.\n\n"
