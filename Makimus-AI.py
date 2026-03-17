@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMenu, QDialog, QTabWidget, QProgressBar,
     QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
-    QInputDialog)
+    QInputDialog, QComboBox)
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence)
 from PyQt6.QtCore import (
@@ -1193,6 +1193,20 @@ class ResultCard(QFrame):
             if self._on_double_click:
                 self._on_double_click(self._image_path)
         super().mouseDoubleClickEvent(event)
+
+
+class ClickableImageLabel(QLabel):
+    """QLabel that calls a callback when clicked, used for inline thumbnails in dialogs."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._on_click = None
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("Click to open in viewer")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._on_click:
+            self._on_click()
+        super().mousePressEvent(event)
 
 
 class ResultsScrollArea(QScrollArea):
@@ -4717,9 +4731,10 @@ class ImageSearchApp(QMainWindow):
 
                 if pil_img is not None:
                     pixmap = pil_to_pixmap(pil_img)
-                    img_lbl = QLabel()
+                    img_lbl = ClickableImageLabel()
                     img_lbl.setPixmap(pixmap)
                     img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    img_lbl._on_click = (lambda p=abs_path: self.open_image_viewer(p))
                     cell_layout.addWidget(img_lbl)
                 else:
                     no_prev = QLabel("[no preview]")
@@ -5115,7 +5130,6 @@ class ImageSearchApp(QMainWindow):
             card_layout.addWidget(size_lbl)
 
             def view_album(members=info["members"], album_num=idx + 1):
-                dlg.accept()
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, os.path.join(self.folder, self.image_paths[i]), "image", {})
@@ -5342,7 +5356,6 @@ class ImageSearchApp(QMainWindow):
         btn_view_all.setProperty("class", "accent")
 
         def _view_all():
-            dlg.accept()
             scored = sorted(
                 ((max(d["score"] for d in dets), path)
                  for path, dets in all_detections.items()),
@@ -5418,7 +5431,6 @@ class ImageSearchApp(QMainWindow):
             card_layout.addWidget(info_lbl)
 
             def _view_bucket(lbl=label, ents=entries):
-                dlg.accept()
                 self._nsfw_load_results(
                     [(score, path, "image", {}) for path, score in ents],
                     lbl.replace("_", " ").title()
