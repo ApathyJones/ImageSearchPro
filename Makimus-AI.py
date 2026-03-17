@@ -2,19 +2,10 @@ import os
 import sys
 import io
 import pickle
-
-# Drag-and-drop support — optional, gracefully disabled if tkinterdnd2 not installed
-try:
-    from tkinterdnd2 import TkinterDnD, DND_FILES
-    _DND_AVAILABLE = True
-except ImportError:
-    _DND_AVAILABLE = False
 import json
 import shutil
 import threading
 from datetime import datetime
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
 from threading import Thread
 from pathlib import Path
 import time
@@ -24,8 +15,20 @@ import subprocess
 import re
 import gc
 import warnings
-from PIL import Image, ImageTk
+from PIL import Image
 import numpy as np
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
+    QLineEdit, QCheckBox, QSlider, QSpinBox, QScrollArea, QListWidget,
+    QListWidgetItem, QMenu, QDialog, QTabWidget, QProgressBar,
+    QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
+    QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
+    QInputDialog)
+from PyQt6.QtGui import (
+    QPixmap, QImage, QFont, QCursor, QAction, QKeySequence)
+from PyQt6.QtCore import (
+    Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent)
 
 # Prevent PIL from crashing on legitimately large images (scanned maps, panoramas, etc.)
 # Files that truly cannot be decoded still get caught by the try/except in open_image()
@@ -165,12 +168,11 @@ CACHE_SUFFIX = ".pkl"
 MODEL_NAME = "ViT-L-14"
 MODEL_PRETRAINED = "laion2b_s32b_b82k"
 
-# ─── ONNX Toggle ────────────────────────────────────────────────────────────
+# --- ONNX Toggle ---
 # Set USE_ONNX = True ONLY if PyTorch CUDA doesn't work on your GPU
 # (e.g. early RTX 50-series Blackwell cards on PyTorch < 2.7)
 # For most users PyTorch native CUDA is faster and uses less VRAM.
 USE_ONNX = False
-# ─────────────────────────────────────────────────────────────────────────────
 
 BG = "#1e1e1e"
 PANEL_BG = "#252526"
@@ -185,8 +187,37 @@ BORDER = "#3c3c3c"
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
-# One thread reads bytes into RAM at a time; all threads decode in parallel after.
 _DISK_LOCK = threading.Lock()
+
+DARK_QSS = f"""
+    QMainWindow, QWidget {{ background-color: {BG}; color: {FG}; }}
+    QFrame {{ background-color: {BG}; }}
+    QPushButton {{ background-color: {ACCENT}; color: {FG}; border: none; padding: 6px 12px; border-radius: 3px; }}
+    QPushButton:hover {{ background-color: #5ecf60; }}
+    QPushButton[class="accent"] {{ background-color: {ACCENT_SECONDARY}; }}
+    QPushButton[class="accent"]:hover {{ background-color: #67c6ff; }}
+    QPushButton[class="danger"] {{ background-color: {DANGER}; }}
+    QPushButton[class="danger"]:hover {{ background-color: #ff6a6a; }}
+    QLineEdit {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; padding: 4px; border-radius: 2px; }}
+    QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
+    QListWidget {{ background-color: {CARD_BG}; color: {FG}; border: none; }}
+    QListWidget::item:selected {{ background-color: {ACCENT}; }}
+    QScrollArea {{ background-color: {BG}; border: none; }}
+    QScrollBar:vertical {{ background: {PANEL_BG}; width: 12px; }}
+    QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 20px; }}
+    QCheckBox {{ color: {FG}; }}
+    QProgressBar {{ background-color: {PANEL_BG}; border: none; }}
+    QProgressBar::chunk {{ background-color: {ACCENT}; }}
+    QTabWidget::pane {{ border: 1px solid {BORDER}; }}
+    QTabBar::tab {{ background: {PANEL_BG}; color: {FG}; padding: 6px 12px; }}
+    QTabBar::tab:selected {{ background: {CARD_BG}; }}
+    QSpinBox {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; }}
+    QSlider::groove:horizontal {{ background: {BORDER}; height: 4px; border-radius: 2px; }}
+    QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; height: 14px; border-radius: 7px; margin: -5px 0; }}
+    QMenu {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; }}
+    QMenu::item:selected {{ background-color: {ACCENT}; }}
+    QDialog {{ background-color: {BG}; }}
+"""
 
 def get_safe_path(path):
     """Prepend Windows extended path prefix to handle paths longer than 260 chars."""
@@ -254,6 +285,16 @@ def safe_print(text, end='\n'):
         print(text, end=end)
     except:
         pass
+
+def pil_to_pixmap(pil_img):
+    """Convert PIL Image to QPixmap via numpy bridge."""
+    if pil_img.mode != 'RGB':
+        pil_img = pil_img.convert('RGB')
+    arr = np.array(pil_img)
+    h, w, c = arr.shape
+    qimg = QImage(arr.data, w, h, w * c, QImage.Format.Format_RGB888)
+    return QPixmap.fromImage(qimg)
+
 
 class HybridCLIPModel:
     """
@@ -339,7 +380,7 @@ class HybridCLIPModel:
                         safe_print(f"[WARNING] Or enable ONNX fallback: set USE_ONNX = True at top of script")
                         safe_print(f"{'='*60}\n")
                     else:
-                        safe_print(f"[MODEL] RTX 50-series detected — PyTorch {torch.__version__} has native support ✓")
+                        safe_print(f"[MODEL] RTX 50-series detected — PyTorch {torch.__version__} has native support")
         except Exception:
             pass
 
@@ -384,7 +425,7 @@ class HybridCLIPModel:
         try:
             self.model = self.model.to(self.device).eval()
         except Exception as gpu_err:
-            safe_print(f"[MODEL] ⚠ GPU transfer failed ({gpu_err}), falling back to CPU")
+            safe_print(f"[MODEL] GPU transfer failed ({gpu_err}), falling back to CPU")
             safe_print(f"[MODEL] Tip: close other GPU-heavy apps (games, other ML tools) and restart")
             self.device = torch.device("cpu")
             self.device_name = "CPU (GPU fallback)"
@@ -444,7 +485,7 @@ class HybridCLIPModel:
                         do_constant_folding=True,
                         verbose=False
                     )
-                safe_print(f"[ONNX] ✓ Export successful")
+                safe_print(f"[ONNX] Export successful")
                 
             except (Exception, SystemError, RuntimeError, KeyboardInterrupt) as e:
                 # Catch all possible exceptions including C++ errors
@@ -617,7 +658,7 @@ class HybridCLIPModel:
         import torch
         try:
             stacked = torch.stack(tensors)
-            # pin_memory allows async non-blocking CPU→GPU transfer on CUDA — GPU doesn't
+            # pin_memory allows async non-blocking CPU->GPU transfer on CUDA — GPU doesn't
             # stall waiting for the copy to finish, improving utilization significantly.
             if torch.cuda.is_available():
                 stacked = stacked.pin_memory()
@@ -680,12 +721,152 @@ class HybridCLIPModel:
             traceback.print_exc()
             raise
 
-class ImageSearchApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Makimus - AI Media Search")
-        self.root.geometry("1400x900")
-        self.root.configure(bg=BG)
+
+class ResultCard(QFrame):
+    """A card widget displaying a single search result (image or video frame)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._image_path = None
+        self._on_single_click = None
+        self._on_double_click = None
+        self._on_context_menu = None
+        self.setFixedSize(CELL_WIDTH, CELL_HEIGHT)
+        self.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(2)
+        
+        self.img_label = QLabel()
+        self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.img_label)
+        
+        self.select_cb = QCheckBox("Select")
+        self.select_cb.setStyleSheet(f"color: {FG};")
+        layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        self.info_label = QLabel()
+        self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_label.setStyleSheet(f"color: {FG}; font-size: 9px; border: none;")
+        self.info_label.setWordWrap(True)
+        layout.addWidget(self.info_label)
+    
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._on_single_click:
+                self._on_single_click(self._image_path, self)
+        elif event.button() == Qt.MouseButton.RightButton:
+            if self._on_context_menu:
+                self._on_context_menu(event.globalPosition().toPoint(), self._image_path)
+        super().mousePressEvent(event)
+    
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self._on_double_click:
+                self._on_double_click(self._image_path)
+        super().mouseDoubleClickEvent(event)
+
+
+class ResultsScrollArea(QScrollArea):
+    """Scrollable area for result cards with rubber-band selection and DnD support."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setStyleSheet(f"background-color: {BG}; border: none;")
+        
+        self._container = QWidget()
+        self._container.setStyleSheet(f"background-color: {BG};")
+        self._grid = QGridLayout(self._container)
+        self._grid.setSpacing(6)
+        self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.setWidget(self._container)
+        
+        # Rubber-band setup
+        self._rb_band = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+        self._rb_start = QPoint()
+        self._rb_active = False
+        self._rb_pending = False
+        self.viewport().installEventFilter(self)
+        
+        # DnD
+        self.setAcceptDrops(True)
+        self._on_drop = None  # callback
+        
+        self._on_press_background = None  # callback for right-click background
+        self._get_cards_fn = None  # reference to app._get_all_cards
+        self._on_rubber_band_select = None
+        
+        # Resize callback
+        self._on_resize = None
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._on_resize:
+            self._on_resize()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        urls = event.mimeData().urls()
+        if urls and self._on_drop:
+            path = urls[0].toLocalFile()
+            self._on_drop(path)
+
+    def contextMenuEvent(self, event):
+        # Only show background context menu if not clicking on a card
+        if self._on_press_background:
+            self._on_press_background(event.globalPos())
+
+    def eventFilter(self, obj, event):
+        if obj is self.viewport():
+            if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                pos = event.pos()
+                hit_card = False
+                if self._get_cards_fn:
+                    for card in self._get_cards_fn():
+                        card_pos = card.mapTo(self.viewport(), QPoint(0, 0))
+                        if QRect(card_pos, card.size()).contains(pos):
+                            hit_card = True
+                            break
+                if not hit_card:
+                    self._rb_pending = True
+                    self._rb_active = False
+                    self._rb_start = pos
+                    return False
+            
+            elif event.type() == QEvent.Type.MouseMove and self._rb_pending:
+                pos = event.pos()
+                dx = abs(pos.x() - self._rb_start.x())
+                dy = abs(pos.y() - self._rb_start.y())
+                if dx > 5 or dy > 5:
+                    self._rb_active = True
+                    rect = QRect(self._rb_start, pos).normalized()
+                    self._rb_band.setGeometry(rect)
+                    self._rb_band.show()
+                return False
+            
+            elif event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                if self._rb_pending:
+                    was_active = self._rb_active
+                    self._rb_pending = False
+                    self._rb_active = False
+                    self._rb_band.hide()
+                    if was_active and self._on_rubber_band_select:
+                        pos = event.pos()
+                        sel_rect = QRect(self._rb_start, pos).normalized()
+                        deselect = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
+                        self._on_rubber_band_select(sel_rect, deselect)
+                    return False
+        return super().eventFilter(obj, event)
+
+
+class ImageSearchApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Makimus - AI Media Search")
+        self.resize(1400, 900)
         
         if os.name == 'nt':
             self.apply_dark_title_bar()
@@ -705,7 +886,7 @@ class ImageSearchApp:
         self._pending_video_refresh = False
 
         # Pending batch accumulators — filled during indexing, flushed before save/search
-        # Avoids O(N²) np.concatenate per batch for large collections
+        # Avoids O(N^2) np.concatenate per batch for large collections
         self._pending_image_batches = []
         self._pending_video_batches = []
         self._cache_lock = threading.Lock()  # guards flush+save vs live search race
@@ -713,10 +894,6 @@ class ImageSearchApp:
         # Failed file tracking — populated during indexing, written to log at end of run
         self._failed_images = []   # list of (abs_path, reason)
         self._failed_videos = []   # list of (abs_path, reason)
-
-        # Result type filter (set in build_ui)
-        self.show_images_var = None
-        self.show_videos_var = None
 
         self.clip_model = None
         self.model_loading = False
@@ -729,7 +906,10 @@ class ImageSearchApp:
         self.stop_search = False
         self.search_thread = None
         self.index_thread = None
-        self.click_timer = None
+        
+        # Click timer for single vs double click disambiguation
+        self.click_timer = QTimer()
+        self.click_timer.setSingleShot(True)
         
         self.total_found = 0
         self.search_generation = 0
@@ -753,12 +933,21 @@ class ImageSearchApp:
 
     def apply_dark_title_bar(self):
         try:
-            self.root.update()
-            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            import ctypes
+            hwnd = int(self.winId())
             value = ctypes.c_int(1)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(value), ctypes.sizeof(value))
         except:
             pass
+
+    def closeEvent(self, event):
+        """Handle window close — warn if indexing is running."""
+        if not self.is_indexing and not self.is_stopping:
+            event.accept()
+            os._exit(0)
+        else:
+            event.ignore()
+            self._show_close_dialog()
 
     def get_cache_filename(self):
         # Format: .clip_cache_ViT-L-14_LAION2B.pkl (preserves hyphens)
@@ -806,88 +995,316 @@ class ImageSearchApp:
         except Exception as e:
             safe_print(f"[EXCLUSIONS] Save error: {e}")
 
-    def open_exclusions_dialog(self):
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Folder Exclusions")
-        dialog.geometry("480x380")
-        dialog.configure(bg=BG)
-        dialog.resizable(True, True)
-        dialog.grab_set()
+    def build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QVBoxLayout(central)
+        main_layout.setContentsMargins(8, 6, 8, 6)
+        main_layout.setSpacing(4)
 
-        tk.Label(
-            dialog,
-            text="Exclude images whose path contains any pattern below.\n"
-                 "Case-sensitive substring match (e.g. 'nsfw', 'temp', 'backup').\n"
-                 "Use forward slashes for folder separators (e.g. 'raw/originals').",
-            bg=BG, fg=FG, font=("Segoe UI", 9), justify="left", wraplength=450
-        ).pack(padx=12, pady=(10, 4), anchor="w")
+        # --- Toolbar ---
+        toolbar_widget = QWidget()
+        toolbar_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        toolbar_layout = QHBoxLayout(toolbar_widget)
+        toolbar_layout.setContentsMargins(4, 4, 4, 4)
+        toolbar_layout.setSpacing(4)
 
-        list_frame = tk.Frame(dialog, bg=BG)
-        list_frame.pack(fill="both", expand=True, padx=12, pady=4)
+        self.btn_folder = QPushButton("Folder")
+        self.btn_folder.clicked.connect(self.on_select_folder)
+        toolbar_layout.addWidget(self.btn_folder)
 
-        scrollbar = tk.Scrollbar(list_frame, bg=PANEL_BG)
-        scrollbar.pack(side="right", fill="y")
+        self.btn_refresh = QPushButton("Refresh")
+        self.btn_refresh.clicked.connect(self.on_force_reindex)
+        toolbar_layout.addWidget(self.btn_refresh)
 
-        listbox = tk.Listbox(
-            list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
-            font=("Segoe UI", 10), yscrollcommand=scrollbar.set,
-            highlightthickness=0, relief="flat"
-        )
-        listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.config(command=listbox.yview)
+        self.btn_index_videos = QPushButton("Index Videos")
+        self.btn_index_videos.clicked.connect(self.on_index_videos_click)
+        toolbar_layout.addWidget(self.btn_index_videos)
 
-        for pattern in sorted(self.excluded_folders):
-            listbox.insert(tk.END, pattern)
+        model_lbl = QLabel(f"Using: {MODEL_NAME}")
+        model_lbl.setStyleSheet(f"color: {ACCENT_SECONDARY};")
+        toolbar_layout.addWidget(model_lbl)
+        toolbar_layout.addSpacing(8)
 
-        entry_frame = tk.Frame(dialog, bg=BG)
-        entry_frame.pack(fill="x", padx=12, pady=4)
+        self.btn_stop = QPushButton("STOP INDEX")
+        self.btn_stop.setProperty("class", "danger")
+        self.btn_stop.clicked.connect(self.stop_indexing_process)
+        toolbar_layout.addWidget(self.btn_stop)
 
-        entry = tk.Entry(
-            entry_frame, bg=CARD_BG, fg=FG, insertbackground=FG,
-            font=("Segoe UI", 10), relief="flat",
-            highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT
-        )
-        entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        btn_exit = QPushButton("EXIT")
+        btn_exit.setProperty("class", "danger")
+        btn_exit.clicked.connect(self.force_quit)
+        toolbar_layout.addWidget(btn_exit)
 
-        def add_pattern():
-            pat = entry.get().strip()
-            if not pat:
-                return
-            if pat not in self.excluded_folders:
-                self.excluded_folders.add(pat)
-                listbox.insert(tk.END, pat)
-                self.save_exclusions()
-            entry.delete(0, tk.END)
+        btn_exclusions = QPushButton("Exclusions")
+        btn_exclusions.clicked.connect(self.open_exclusions_dialog)
+        toolbar_layout.addWidget(btn_exclusions)
 
-        def remove_pattern():
-            sel = listbox.curselection()
-            if not sel:
-                return
-            pat = listbox.get(sel[0])
-            self.excluded_folders.discard(pat)
-            listbox.delete(sel[0])
-            self.save_exclusions()
+        btn_duplicates = QPushButton("Duplicates")
+        btn_duplicates.clicked.connect(self.on_find_duplicates)
+        toolbar_layout.addWidget(btn_duplicates)
 
-        entry.bind("<Return>", lambda e: add_pattern())
-        ttk.Button(entry_frame, text="Add", command=add_pattern, width=8).pack(side="left")
+        btn_smart = QPushButton("Smart Albums")
+        btn_smart.clicked.connect(self.on_smart_albums)
+        toolbar_layout.addWidget(btn_smart)
 
-        btn_frame = tk.Frame(dialog, bg=BG)
-        btn_frame.pack(fill="x", padx=12, pady=(0, 4))
-        ttk.Button(btn_frame, text="Remove Selected", command=remove_pattern, width=16, style="Danger.TButton").pack(side="left", padx=(0, 8))
-        ttk.Button(btn_frame, text="Close", command=dialog.destroy, width=10).pack(side="left")
+        self.status_label = QLabel("Starting...")
+        self.status_label.setMinimumWidth(250)
+        toolbar_layout.addWidget(self.status_label)
 
-        tk.Label(
-            dialog,
-            text="Note: Run Refresh after changing exclusions to apply them to the index.",
-            bg=BG, fg=ORANGE, font=("Segoe UI", 8, "italic")
-        ).pack(padx=12, pady=(0, 8), anchor="w")
+        self.stats_label = QLabel("")
+        toolbar_layout.addWidget(self.stats_label)
+
+        toolbar_layout.addStretch()
+
+        self.device_label = QLabel("...")
+        self.device_label.setStyleSheet(f"color: {ACCENT_SECONDARY};")
+        toolbar_layout.addWidget(self.device_label)
+
+        btn_info = QPushButton("?")
+        btn_info.setFixedWidth(30)
+        btn_info.clicked.connect(self.show_index_info)
+        toolbar_layout.addWidget(btn_info)
+
+        main_layout.addWidget(toolbar_widget)
+
+        # --- Search bar ---
+        search_widget = QWidget()
+        search_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        search_layout = QHBoxLayout(search_widget)
+        search_layout.setContentsMargins(8, 4, 8, 4)
+        search_layout.setSpacing(6)
+
+        search_layout.addWidget(QLabel("Search:"))
+
+        self.query_entry = QLineEdit()
+        self.query_entry.setFont(QFont("Segoe UI", 12))
+        self.query_entry.setMaxLength(500)
+        self.query_entry.returnPressed.connect(self.on_search_click)
+        self.query_entry.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.query_entry.customContextMenuRequested.connect(self._show_search_context_menu)
+        search_layout.addWidget(self.query_entry, stretch=1)
+
+        self.btn_search = QPushButton("Search")
+        self.btn_search.setProperty("class", "accent")
+        self.btn_search.clicked.connect(self.on_search_click)
+        search_layout.addWidget(self.btn_search)
+
+        btn_image = QPushButton("Image")
+        btn_image.clicked.connect(self.on_image_click)
+        search_layout.addWidget(btn_image)
+
+        btn_history = QPushButton("History")
+        btn_history.clicked.connect(self.on_history_click)
+        search_layout.addWidget(btn_history)
+
+        main_layout.addWidget(search_widget)
+
+        # --- Controls bar ---
+        controls_widget = QWidget()
+        controls_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        controls_layout = QHBoxLayout(controls_widget)
+        controls_layout.setContentsMargins(8, 4, 8, 4)
+        controls_layout.setSpacing(4)
+
+        controls_layout.addWidget(QLabel("Similarity Score:"))
+        self.score_slider = QSlider(Qt.Orientation.Horizontal)
+        self.score_slider.setRange(0, 100)
+        self.score_slider.setValue(15)  # 0.15 default
+        self.score_slider.setFixedWidth(140)
+        self.score_val_label = QLabel("0.15")
+        self.score_slider.valueChanged.connect(
+            lambda v: self.score_val_label.setText(f"{v/100.0:.2f}"))
+        controls_layout.addWidget(self.score_slider)
+        controls_layout.addWidget(self.score_val_label)
+
+        controls_layout.addSpacing(8)
+        controls_layout.addWidget(QLabel("Results Per Page:"))
+        self.top_n_slider = QSlider(Qt.Orientation.Horizontal)
+        self.top_n_slider.setRange(1, 50)
+        self.top_n_slider.setValue(3)  # 3*10=30 default
+        self.top_n_slider.setFixedWidth(170)
+        self.top_n_val_label = QLabel("30")
+        self.top_n_slider.valueChanged.connect(
+            lambda v: self.top_n_val_label.setText(str(v * 10)))
+        controls_layout.addWidget(self.top_n_slider)
+        controls_layout.addWidget(self.top_n_val_label)
+
+        btn_clear = QPushButton("Clear Results")
+        btn_clear.clicked.connect(self.on_clear_click)
+        controls_layout.addWidget(btn_clear)
+
+        btn_copy = QPushButton("Copy")
+        btn_copy.clicked.connect(self.on_copy_click)
+        controls_layout.addWidget(btn_copy)
+
+        btn_move = QPushButton("Move")
+        btn_move.setProperty("class", "accent")
+        btn_move.clicked.connect(self.on_move_click)
+        controls_layout.addWidget(btn_move)
+
+        btn_delete = QPushButton("Delete")
+        btn_delete.setProperty("class", "danger")
+        btn_delete.clicked.connect(self.on_delete_click)
+        controls_layout.addWidget(btn_delete)
+
+        btn_select_all = QPushButton("Select All")
+        btn_select_all.clicked.connect(self._select_all_cards)
+        controls_layout.addWidget(btn_select_all)
+
+        btn_deselect_all = QPushButton("Deselect All")
+        btn_deselect_all.clicked.connect(self._deselect_all_cards)
+        controls_layout.addWidget(btn_deselect_all)
+
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.Shape.VLine)
+        sep1.setStyleSheet(f"color: {BORDER};")
+        controls_layout.addWidget(sep1)
+
+        self.show_images_cb = QCheckBox("Images")
+        self.show_images_cb.setChecked(True)
+        controls_layout.addWidget(self.show_images_cb)
+
+        self.show_videos_cb = QCheckBox("Videos")
+        self.show_videos_cb.setChecked(True)
+        controls_layout.addWidget(self.show_videos_cb)
+
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.Shape.VLine)
+        sep2.setStyleSheet(f"color: {BORDER};")
+        controls_layout.addWidget(sep2)
+
+        self.dedup_video_cb = QCheckBox("Best frame/video")
+        self.dedup_video_cb.setChecked(False)
+        controls_layout.addWidget(self.dedup_video_cb)
+
+        main_layout.addWidget(controls_widget)
+
+        # --- Progress bar ---
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(False)
+        self.progress.setMaximumHeight(8)
+        main_layout.addWidget(self.progress)
+
+        self.progress_label = QLabel("")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(self.progress_label)
+
+        # --- Page navigation ---
+        self.page_nav_widget = QWidget()
+        page_nav_layout = QHBoxLayout(self.page_nav_widget)
+        page_nav_layout.setContentsMargins(0, 0, 0, 0)
+        page_nav_layout.addStretch()
+
+        self.prev_page_btn = QPushButton("← Prev Page")
+        self.prev_page_btn.setProperty("class", "accent")
+        self.prev_page_btn.clicked.connect(self.prev_page_results)
+        page_nav_layout.addWidget(self.prev_page_btn)
+
+        self.page_label = QLabel("")
+        self.page_label.setStyleSheet(f"color: {FG}; font-size: 10pt;")
+        page_nav_layout.addWidget(self.page_label)
+
+        self.show_more_btn = QPushButton("Next Page →")
+        self.show_more_btn.setProperty("class", "accent")
+        self.show_more_btn.clicked.connect(self.show_more_results)
+        page_nav_layout.addWidget(self.show_more_btn)
+
+        page_nav_layout.addStretch()
+        self.page_nav_widget.setVisible(False)
+        main_layout.addWidget(self.page_nav_widget)
+
+        # --- Results scroll area ---
+        self.scroll_area = ResultsScrollArea()
+        self.scroll_area._on_drop = self._on_drop_image
+        self.scroll_area._get_cards_fn = self._get_all_cards
+        self.scroll_area._on_rubber_band_select = self._on_rubber_band_select
+        self.scroll_area._on_press_background = self._show_canvas_context_menu
+        self.scroll_area._on_resize = self.on_scroll_area_resize
+        main_layout.addWidget(self.scroll_area, stretch=1)
+
+    # ---- UI helpers ----
+
+    def update_status(self, text, color="blue"):
+        color_map = {"green": "#4CAF50", "orange": "#ff9800", "red": "#f44336", "blue": "#3fa9f5"}
+        c = color_map.get(color, color)
+        self.status_label.setText(text)
+        self.status_label.setStyleSheet(f"color: {c};")
+
+    def update_stats(self):
+        has_images = self.image_embeddings is not None and len(self.image_paths) > 0
+        has_videos = self.video_embeddings is not None and len(self.video_paths) > 0
+
+        if has_images and has_videos:
+            n_imgs = len(self.image_paths)
+            n_frames = len(self.video_paths)
+            n_vids = len(set(vp for vp, _ in self.video_paths))
+            self.stats_label.setText(f"{n_imgs:,} images | {n_vids:,} videos ({n_frames:,} frames)")
+        elif has_images:
+            self.stats_label.setText(f"{len(self.image_paths):,} images indexed")
+        elif has_videos:
+            n_frames = len(self.video_paths)
+            n_vids = len(set(vp for vp, _ in self.video_paths))
+            self.stats_label.setText(f"{n_vids:,} videos ({n_frames:,} frames)")
+        else:
+            self.stats_label.setText("")
+
+    def update_progress(self, value, text):
+        self.progress.setRange(0, 100)
+        self.progress.setValue(int(value))
+        self.progress_label.setText(text)
+
+    def _safe_after(self, ms, func):
+        """QTimer.singleShot wrapper safe to call from any thread."""
+        try:
+            QTimer.singleShot(ms, func)
+        except Exception:
+            pass
+
+    def on_scroll_area_resize(self):
+        vp_width = self.scroll_area.viewport().width()
+        new_cols = max(1, vp_width // CELL_WIDTH)
+        if new_cols != self.render_cols:
+            self.render_cols = new_cols
+            self._reflow_grid()
+
+    def _reflow_grid(self, cards=None):
+        if cards is None:
+            cards = self._get_all_cards()
+        cols = max(1, getattr(self, 'render_cols', 1))
+        for idx, card in enumerate(cards):
+            r, c = divmod(idx, cols)
+            self.scroll_area._grid.addWidget(card, r, c)
+        self.thumbnail_count = len(cards)
+
+    def _get_all_cards(self):
+        """Return all ResultCard widgets currently in the grid."""
+        cards = []
+        layout = self.scroll_area._grid
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and isinstance(item.widget(), ResultCard):
+                cards.append(item.widget())
+        return cards
+
+    def _on_rubber_band_select(self, sel_rect, deselect):
+        """Handle rubber-band selection completion."""
+        for card in self._get_all_cards():
+            card_pos = card.mapTo(self.scroll_area.viewport(), QPoint(0, 0))
+            card_rect = QRect(card_pos, card.size())
+            if sel_rect.intersects(card_rect):
+                self._set_card_selection_by_path(card._image_path, not deselect)
+
+    # ---- Model loading ----
 
     def load_model(self):
         self.model_loading = True
-        self.root.after(0, lambda: self.update_status("Loading model...", "orange"))
+        QTimer.singleShot(0, lambda: self.update_status("Loading model...", "orange"))
         try:
             self.clip_model = HybridCLIPModel()
-            self.root.after(0, lambda: self.update_status("Ready", "green"))
+            QTimer.singleShot(0, lambda: self.update_status("Ready", "green"))
             device = self.clip_model.device_name
             batch = BATCH_SIZE
             if "CUDA" in device:
@@ -898,184 +1315,23 @@ class ImageSearchApp:
                 short = f"DirectML  •  Batch {batch}"
             else:
                 short = f"CPU  •  Batch {batch}"
-            self.root.after(0, lambda s=short: self.device_label.config(text=s))
+            QTimer.singleShot(0, lambda s=short: self.device_label.setText(s))
             safe_print(f"[LOAD] Success!\n")
         except Exception as e:
             safe_print(f"[ERROR] {e}")
             err_msg = str(e)
-            self.root.after(0, lambda: self.update_status("Load Failed", "red"))
-            self.root.after(0, lambda: self.device_label.config(text="Load Failed"))
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to load model\n{err_msg}"))
+            QTimer.singleShot(0, lambda: self.update_status("Load Failed", "red"))
+            QTimer.singleShot(0, lambda: self.device_label.setText("Load Failed"))
+            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"Failed to load model\n{err_msg}"))
         self.model_loading = False
 
-    def build_ui(self):
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("TFrame", background=PANEL_BG)
-        style.configure("TLabel", background=PANEL_BG, foreground=FG)
-        style.configure("TButton", background=ACCENT, foreground=FG, padding=6, borderwidth=0)
-        style.map("TButton", background=[("active", "#5ecf60")])
-        style.configure("Accent.TButton", background=ACCENT_SECONDARY, foreground=FG, padding=6, borderwidth=0)
-        style.map("Accent.TButton", background=[("active", "#67c6ff")])
-        style.configure("Danger.TButton", background=DANGER, foreground=FG, padding=6, borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#ff6a6a")])
-        style.configure("Horizontal.TProgressbar", troughcolor=PANEL_BG, background=ACCENT)
-        style.configure("Vertical.TScrollbar", background=PANEL_BG, troughcolor=PANEL_BG, arrowcolor=FG)
-
-        top = ttk.Frame(self.root, padding=8)
-        top.pack(fill="x", padx=8, pady=6)
-        
-        self.btn_folder = ttk.Button(top, text="Folder", command=self.on_select_folder, width=10)
-        self.btn_folder.pack(side="left", padx=4)
-        
-        self.btn_refresh = ttk.Button(top, text="Refresh", command=self.on_force_reindex, width=10)
-        self.btn_refresh.pack(side="left", padx=4)
-
-        self.btn_index_videos = ttk.Button(top, text="Index Videos", command=self.on_index_videos_click, width=13)
-        self.btn_index_videos.pack(side="left", padx=4)
-        
-        ttk.Label(top, text=f"Using: {MODEL_NAME}", foreground=ACCENT_SECONDARY).pack(side="left", padx=(16, 4))
-        
-        self.btn_stop = ttk.Button(top, text="STOP INDEX", command=self.stop_indexing_process, width=12, style="Danger.TButton")
-        self.btn_stop.pack(side="left", padx=(20, 4))
-        
-        ttk.Button(top, text="EXIT", command=self.force_quit, width=12, style="Danger.TButton").pack(side="left", padx=6)
-
-        ttk.Button(top, text="Exclusions", command=self.open_exclusions_dialog, width=12).pack(side="left", padx=6)
-        ttk.Button(top, text="Duplicates", command=self.on_find_duplicates, width=12).pack(side="left", padx=4)
-        ttk.Button(top, text="Smart Albums", command=self.on_smart_albums, width=14).pack(side="left", padx=4)
-
-        self.status_label = ttk.Label(top, text="Starting...", width=35, anchor="w")
-        self.status_label.pack(side="left", padx=10)
-        self.stats_label = ttk.Label(top, text="")
-        self.stats_label.pack(side="left")
-
-        ttk.Button(top, text="?", command=self.show_index_info, width=3).pack(side="right", padx=(4, 0))
-        self.device_label = ttk.Label(top, text="...", foreground=ACCENT_SECONDARY)
-        self.device_label.pack(side="right", padx=(0, 8))
-
-        search_frame = ttk.Frame(self.root, padding=8)
-        search_frame.pack(fill="x", padx=8, pady=4)
-        ttk.Label(search_frame, text="Search:").pack(side="left", padx=(0, 6))
-        
-        self._query_var = tk.StringVar()
-        def _limit_query(*_):
-            v = self._query_var.get()
-            if len(v) > 500:
-                self._query_var.set(v[:500])
-        self._query_var.trace_add("write", _limit_query)
-        self.query_entry = tk.Entry(search_frame, font=("Segoe UI", 12), bg=CARD_BG, fg=FG,
-                                    insertbackground=FG, relief="flat", highlightthickness=1,
-                                    highlightcolor=ACCENT, highlightbackground=BORDER,
-                                    textvariable=self._query_var)
-        self.query_entry.pack(side="left", fill="x", expand=True, padx=6)
-        self.query_entry.bind("<Return>", lambda e: self.on_search_click())
-        self.query_entry.bind("<Button-3>", self._show_search_context_menu)
-        
-        ttk.Button(search_frame, text="Search", command=self.on_search_click, width=12, style="Accent.TButton").pack(side="left", padx=4)
-        ttk.Button(search_frame, text="Image", command=self.on_image_click, width=10).pack(side="left", padx=4)
-        ttk.Button(search_frame, text="History", command=self.on_history_click, width=10).pack(side="left", padx=4)
-
-        ctrl_frame = ttk.Frame(self.root, padding=8)
-        ctrl_frame.pack(fill="x", padx=8, pady=4)
-        
-        ttk.Label(ctrl_frame, text="Similarity Score:").pack(side="left", padx=(0, 4))
-        self.score_var = tk.DoubleVar(value=0.15)
-        tk.Scale(ctrl_frame, from_=0.0, to=1.0, resolution=0.01, orient="horizontal",
-                 variable=self.score_var, length=140, bg=PANEL_BG, fg=FG, troughcolor=BORDER, highlightthickness=0).pack(side="left")
-
-        ttk.Label(ctrl_frame, text="Results Per Page:").pack(side="left", padx=(16, 4))
-        self.top_n_var = tk.IntVar(value=TOP_RESULTS)
-        tk.Scale(ctrl_frame, from_=10, to=500, resolution=10, orient="horizontal", 
-                 variable=self.top_n_var, length=170, bg=PANEL_BG, fg=FG, troughcolor=BORDER, highlightthickness=0).pack(side="left")
-        
-        ttk.Button(ctrl_frame, text="Clear Results", command=self.on_clear_click, width=12).pack(side="left", padx=14)
-        ttk.Button(ctrl_frame, text="Copy", command=self.on_copy_click, width=8).pack(side="left", padx=4)
-        ttk.Button(ctrl_frame, text="Move", command=self.on_move_click, width=8, style="Accent.TButton").pack(side="left", padx=4)
-        ttk.Button(ctrl_frame, text="Delete", command=self.on_delete_click, width=8, style="Danger.TButton").pack(side="left", padx=4)
-        ttk.Button(ctrl_frame, text="Select All", command=self._select_all_cards, width=10).pack(side="left", padx=4)
-        ttk.Button(ctrl_frame, text="Deselect All", command=self._deselect_all_cards, width=10).pack(side="left", padx=4)
-
-        ttk.Separator(ctrl_frame, orient="vertical").pack(side="left", fill="y", padx=(14, 8), pady=4)
-        self.show_images_var = tk.BooleanVar(value=True)
-        self.show_videos_var = tk.BooleanVar(value=True)
-        tk.Checkbutton(ctrl_frame, text="Images", variable=self.show_images_var,
-                       bg=PANEL_BG, fg=FG, selectcolor=BG, activebackground=PANEL_BG,
-                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-        tk.Checkbutton(ctrl_frame, text="Videos", variable=self.show_videos_var,
-                       bg=PANEL_BG, fg=FG, selectcolor=BG, activebackground=PANEL_BG,
-                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-
-        ttk.Separator(ctrl_frame, orient="vertical").pack(side="left", fill="y", padx=(8, 8), pady=4)
-        self.dedup_video_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(ctrl_frame, text="Best frame/video", variable=self.dedup_video_var,
-                       bg=PANEL_BG, fg=FG, selectcolor=BG, activebackground=PANEL_BG,
-                       font=("Segoe UI", 9)).pack(side="left", padx=(0, 4))
-
-        self.progress = ttk.Progressbar(self.root, mode='determinate')
-        self.progress.pack(fill="x", padx=10, pady=6)
-        self.progress_label = ttk.Label(self.root, text="", anchor="center")
-        self.progress_label.pack()
-
-        # Page navigation frame — packed BEFORE results_container so it stays at bottom
-        self.show_more_frame = tk.Frame(self.root, bg=BG)
-        # Inner frame to center buttons
-        nav_inner = tk.Frame(self.show_more_frame, bg=BG)
-        nav_inner.pack(anchor="center")
-        self.prev_page_btn = ttk.Button(nav_inner, text="← Prev Page", command=self.prev_page_results, width=14, style="Accent.TButton")
-        self.prev_page_btn.pack(side="left", padx=8, pady=6)
-        self.page_label = ttk.Label(nav_inner, text="", background=BG, foreground=FG, font=("Segoe UI", 10))
-        self.page_label.pack(side="left", padx=16)
-        self.show_more_btn = ttk.Button(nav_inner, text="Next Page →", command=self.show_more_results, width=14, style="Accent.TButton")
-        self.show_more_btn.pack(side="left", padx=8, pady=6)
-        # show_more_frame only packed when there are results
-
-        results_container = ttk.Frame(self.root, padding=6)
-        results_container.pack(fill="both", expand=True, padx=8, pady=6)
-        
-        self.canvas = tk.Canvas(results_container, bg=BG, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(results_container, orient="vertical", command=self.canvas.yview)
-        
-        self.results_frame = tk.Frame(self.canvas, bg=BG, highlightthickness=0)
-        self.canvas_window = self.canvas.create_window((0, 0), window=self.results_frame, anchor="nw")
-        
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        self.canvas.bind('<Configure>', self.on_canvas_configure)
-        self.results_frame.bind('<Configure>', self._on_results_frame_configure)
-        
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        # Setup rubber-band selection on canvas
-        self._setup_rubber_band()
-
-        # Drag and drop — register canvas as drop target if tkinterdnd2 is available
-        if _DND_AVAILABLE:
-            try:
-                self.canvas.drop_target_register(DND_FILES)
-                self.canvas.dnd_bind('<<Drop>>', self._on_drop_image)
-            except Exception:
-                pass  # DnD registration failed silently — app works fine without it
-
-        if sys.platform == 'darwin':
-            self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1 * e.delta), "units"))
-        elif sys.platform.startswith('linux'):
-            self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
-            self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(1, "units"))
-        else:
-            self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
-
-        # Intercept X button — warn user if indexing is running
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+    # ---- Action handlers ----
 
     def is_safe_to_act(self, action_callback=None, action_name="action"):
-        """
-        Returns True if no indexing is happening.
-        Shows a wait popup if indexing is running — never auto-stops.
-        Only the STOP INDEX button stops indexing.
-        """
+        """Returns True if no indexing is happening."""
         if self.is_indexing or self.is_stopping:
-            messagebox.showinfo(
+            QMessageBox.information(
+                self,
                 "Indexing in Progress",
                 "Indexing is currently running.\n\n"
                 "Please wait for it to finish, or press STOP INDEX to save your partial cache and stop.\n\n"
@@ -1095,23 +1351,11 @@ class ImageSearchApp:
         self.cancel_search(clear_ui=True)
         self.select_folder()
 
-    def on_select_cache(self):
-        if not self.is_safe_to_act(action_callback=self.select_cache, action_name="load cache"):
-            return
-        self.cancel_search(clear_ui=True)
-        self.select_cache()
-
     def on_force_reindex(self):
         if not self.is_safe_to_act(action_callback=self.force_reindex, action_name="refresh index"):
             return
         self.cancel_search(clear_ui=True)
         self.force_reindex()
-
-    def on_delete_cache(self):
-        if not self.is_safe_to_act(action_callback=self.delete_cache, action_name="clear cache"):
-            return
-        self.cancel_search(clear_ui=True)
-        self.delete_cache()
 
     def on_clear_click(self):
         self.cancel_search(clear_ui=True)
@@ -1132,39 +1376,28 @@ class ImageSearchApp:
         self.do_search()
 
     def on_image_click(self):
-        # Image search does matrix multiply against image_embeddings
-        # which the indexing thread is actively growing — unsafe to run concurrently
         if not self.is_safe_to_act(action_name="image search"):
             return
         self.cancel_search(clear_ui=True)
         self.image_search()
 
-    def _on_drop_image(self, event):
-        """Handle image file dropped onto the canvas — same restrictions as Image button."""
-        # Respect same guards as on_image_click
+    def _on_drop_image(self, path):
+        """Handle image file dropped onto the scroll area."""
         if self.clip_model is None:
-            messagebox.showwarning("Wait", "Model is still loading, please wait.")
+            QMessageBox.warning(self, "Wait", "Model is still loading, please wait.")
             return
         if not self.is_safe_to_act(action_name="image search"):
             return
         if not self.folder:
-            messagebox.showwarning("No Folder", "Please select a folder first before searching by image.")
+            QMessageBox.warning(self, "No Folder", "Please select a folder first before searching by image.")
             return
         if self.image_embeddings is None and self.video_embeddings is None:
-            messagebox.showwarning("Not Indexed", "Please index a folder first before searching by image.")
+            QMessageBox.warning(self, "Not Indexed", "Please index a folder first before searching by image.")
             return
-        # tkinterdnd2 returns path(s) wrapped in braces if they contain spaces: {C:/some path/file.jpg}
-        raw = event.data.strip()
-        if raw.startswith('{') and raw.endswith('}'):
-            path = raw[1:-1]
-        else:
-            # Multiple files dropped — just use the first one
-            path = raw.split()[0]
-        # Only accept image files
         valid_exts = ('.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif',
                       '.cr2', '.nef', '.arw', '.dng', '.orf', '.rw2', '.raf', '.pef', '.sr2')
         if not path.lower().endswith(valid_exts):
-            messagebox.showwarning("Unsupported File",
+            QMessageBox.warning(self, "Unsupported File",
                 "Only image files can be used for image search.\nDrop a JPG, PNG, WEBP or RAW file.")
             return
         if not os.path.isfile(path):
@@ -1174,70 +1407,27 @@ class ImageSearchApp:
         self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
         self.search_thread.start()
 
-    def _on_results_frame_configure(self, event):
-        """Update scrollregion after forcing Tkinter to finish all pending geometry calculations"""
-        self.results_frame.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
-    def on_canvas_configure(self, event):
-        self.canvas.itemconfig(self.canvas_window, width=event.width)
-        # Recalculate columns and reflow grid if column count changed
-        new_cols = max(1, event.width // CELL_WIDTH)
-        if new_cols != self.render_cols:
-            self.render_cols = new_cols
-            # Re-grid all existing thumbnail cards to new column layout
-            children = self.results_frame.winfo_children()
-            for idx, widget in enumerate(children):
-                r, c = divmod(idx, new_cols)
-                widget.grid(row=r, column=c, padx=6, pady=6)
-            # Update counter to match actual children
-            self.thumbnail_count = len(children)
-            # Force scrollregion update after reflow
-            self.results_frame.update_idletasks()
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-
     def force_quit(self):
-        if messagebox.askyesno("Force Quit", "Force quit application?"):
+        if QMessageBox.question(self, "Force Quit", "Force quit application?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             os._exit(0)
 
-    def on_close(self):
-        """Called when user clicks the X button (WM_DELETE_WINDOW).
-        If indexing is running, offer three choices instead of silently killing the process."""
-        if not self.is_indexing and not self.is_stopping:
-            self.root.destroy()
-            os._exit(0)
-            return
+    def _show_close_dialog(self):
+        """Show dialog when user closes window while indexing is running."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Indexing in Progress")
+        dlg.setFixedSize(440, 170)
+        layout = QVBoxLayout(dlg)
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Indexing in Progress")
-        dialog.resizable(False, False)
-        dialog.grab_set()
-        dialog.configure(bg=PANEL_BG)
+        lbl1 = QLabel("Indexing is currently running.")
+        lbl1.setStyleSheet(f"font-size: 11pt; font-weight: bold; color: {ORANGE};")
+        layout.addWidget(lbl1)
+        layout.addWidget(QLabel("What would you like to do?"))
 
-        # Centre over main window
-        self.root.update_idletasks()
-        x = self.root.winfo_x() + self.root.winfo_width() // 2 - 220
-        y = self.root.winfo_y() + self.root.winfo_height() // 2 - 90
-        dialog.geometry(f"440x170+{x}+{y}")
-
-        ttk.Label(
-            dialog,
-            text="⚠  Indexing is currently running.",
-            font=("Segoe UI", 11, "bold"),
-            background=PANEL_BG, foreground=ORANGE
-        ).pack(pady=(18, 4))
-
-        ttk.Label(
-            dialog,
-            text="What would you like to do?",
-            background=PANEL_BG, foreground=FG
-        ).pack(pady=(0, 14))
-
-        btn_frame = tk.Frame(dialog, bg=PANEL_BG)
-        btn_frame.pack()
+        btn_row = QHBoxLayout()
 
         def stop_and_close():
-            dialog.destroy()
+            dlg.accept()
             self.stop_indexing = True
             self.is_stopping = True
             self._safe_after(0, lambda: self.update_status("Stopping & saving before exit...", ORANGE))
@@ -1246,26 +1436,23 @@ class ImageSearchApp:
                 if self.is_indexing:
                     self._safe_after(200, _wait)
                 else:
-                    try:
-                        self.root.destroy()
-                    except Exception:
-                        pass
                     os._exit(0)
             self._safe_after(200, _wait)
 
-        def quit_anyway():
-            dialog.destroy()
-            os._exit(0)
+        b1 = QPushButton("Stop & Save")
+        b1.setProperty("class", "accent")
+        b1.clicked.connect(stop_and_close)
+        b2 = QPushButton("Quit Anyway")
+        b2.setProperty("class", "danger")
+        b2.clicked.connect(lambda: os._exit(0))
+        b3 = QPushButton("Cancel")
+        b3.clicked.connect(dlg.reject)
 
-        def cancel():
-            dialog.destroy()
-
-        ttk.Button(btn_frame, text="Stop & Save",  command=stop_and_close,
-                   style="Accent.TButton",  width=14).pack(side="left", padx=6)
-        ttk.Button(btn_frame, text="Quit Anyway",  command=quit_anyway,
-                   style="Danger.TButton",  width=14).pack(side="left", padx=6)
-        ttk.Button(btn_frame, text="Cancel",       command=cancel,
-                   width=10).pack(side="left", padx=6)
+        btn_row.addWidget(b1)
+        btn_row.addWidget(b2)
+        btn_row.addWidget(b3)
+        layout.addLayout(btn_row)
+        dlg.exec()
 
     def stop_indexing_process(self):
         if self.is_indexing and not self.is_stopping:
@@ -1278,7 +1465,7 @@ class ImageSearchApp:
                 safe_print("[STOP] Clearing pending action...")
                 self.pending_action = None
                 self.update_status("Stopping... (Pending action cancelled)", DANGER)
-                self.btn_stop.config(text="STOP INDEX")
+                self.btn_stop.setText("STOP INDEX")
 
     def cancel_search(self, clear_ui=False):
         """Cancel ongoing search and optionally clear UI"""
@@ -1293,21 +1480,21 @@ class ImageSearchApp:
             self.clear_results()  # This will free thumbnail RAM
         
         if not self.is_indexing:
-            self.progress.stop()
-            self.progress['value'] = 0
-            self.progress_label.config(text="")
+            self.progress.setRange(0, 100)
+            self.progress.setValue(0)
+            self.progress_label.setText("")
         
         if self.is_searching:
-             self.update_status("Search Cancelled", "orange")
+            self.update_status("Search Cancelled", "orange")
         self.is_searching = False
 
     def select_folder(self):
         if self.clip_model is None:
-            messagebox.showwarning("Wait", "Model is still loading...")
+            QMessageBox.warning(self, "Wait", "Model is still loading...")
             return
         
         # Show dialog FIRST — don't wipe anything until user confirms a new folder
-        folder = filedialog.askdirectory()
+        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if not folder:
             self.update_status("No folder selected", "orange")
             return
@@ -1346,12 +1533,14 @@ class ImageSearchApp:
         if found_cache:
             self.cache_file = found_cache
             self.load_cache_data(found_cache)
-            self.query_entry.delete(0, tk.END)
+            self.query_entry.clear()
         else:
             safe_print("[CACHE] Image cache not found")
             if not found_video_cache:
                 # No image cache AND no video cache — ask to index images
-                if messagebox.askyesno("Index Folder?", f"No cache found for this folder.\n\nIndex images now?"):
+                if QMessageBox.question(self, "Index Folder?",
+                        f"No cache found for this folder.\n\nIndex images now?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                     self.cache_file = os.path.join(folder, cache_files[0])
                     self.start_indexing(mode="full")
                 else:
@@ -1361,7 +1550,7 @@ class ImageSearchApp:
         if found_video_cache:
             self.load_video_cache_data(video_cache_path)
             safe_print(f"[VCACHE] Auto-loaded: {video_cache_name}")
-            self.query_entry.delete(0, tk.END)
+            self.query_entry.clear()
             # Update status to reflect what's actually loaded
             has_images = self.image_embeddings is not None and len(self.image_paths) > 0
             has_videos = self.video_embeddings is not None and len(self.video_paths) > 0
@@ -1375,13 +1564,6 @@ class ImageSearchApp:
             elif has_images:
                 self.update_status(f"Loaded {len(self.image_paths):,} images", "green")
 
-    def select_cache(self):
-        cache = filedialog.askopenfilename(filetypes=[("Pickle", "*.pkl")])
-        if not cache: return
-        self.load_cache_data(cache)
-        # Clear search bar — don't auto-search on cache load
-        self.query_entry.delete(0, tk.END)
-
     def load_cache_data(self, cache_path):
         try:
             safe_print(f"[CACHE] Loading: {cache_path}")
@@ -1393,7 +1575,6 @@ class ImageSearchApp:
                 self.image_paths, self.image_embeddings = data
 
             # Normalize to forward slashes — makes cache cross-platform (Windows/Linux/Mac)
-            # Old Windows caches with backslashes load correctly on Linux and vice versa
             self.image_paths = [p.replace('\\', '/') for p in self.image_paths]
 
             if hasattr(self.image_embeddings, 'cpu'):
@@ -1412,7 +1593,7 @@ class ImageSearchApp:
                 self.update_status(f"Loaded {n_imgs:,} images", "green")
             safe_print(f"[CACHE] Success. {n_imgs:,} images (relative paths).")
         except Exception as e:
-            messagebox.showerror("Error", f"Load failed: {e}")
+            QMessageBox.critical(self, "Error", f"Load failed: {e}")
             self.update_status("Cache load failed", "red")
 
     def load_video_cache_data(self, cache_path):
@@ -1439,16 +1620,16 @@ class ImageSearchApp:
             self.video_embeddings = None
 
     def start_indexing(self, mode="full"):
-        # Guard against double-start — should never happen but belt-and-suspenders
+        # Guard against double-start
         if self.is_indexing:
-            safe_print(f"[INDEX] ⚠ start_indexing called while already indexing (mode={mode}), ignoring")
+            safe_print(f"[INDEX] start_indexing called while already indexing (mode={mode}), ignoring")
             return
 
         self.stop_indexing = False
         self.is_stopping = False
         self.pending_action = None
         self.update_status("Indexing...", "orange")
-        self.btn_stop.config(text="STOP INDEX")
+        self.btn_stop.setText("STOP INDEX")
         
         if mode == "full":
             self.index_thread = Thread(target=self.index_all_images, daemon=True)
@@ -1459,39 +1640,35 @@ class ImageSearchApp:
         elif mode == "video_refresh":
             self.index_thread = Thread(target=self.refresh_video_index, daemon=True)
         else:
-            safe_print(f"[INDEX] ⚠ Unknown mode: {mode}")
+            safe_print(f"[INDEX] Unknown mode: {mode}")
             return
 
         self.index_thread.start()
+
 
     def refresh_index(self):
         if not self.folder or self.clip_model is None: return
         self.is_indexing = True
 
-        # If cache_file was never set (e.g. user said No to image index popup but then
-        # indexed videos, then clicked Refresh) — set it now so _save_cache has a path
         if not self.cache_file:
             cache_files = self.get_cache_filename()
             self.cache_file = os.path.join(self.folder, cache_files[0])
         
-        # Only recreate ONNX if it's not permanently disabled
         if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
             if not getattr(self.clip_model, 'onnx_disabled', False):
                 try:
                     self.clip_model._create_onnx_session()
                 except:
-                    pass  # Silently fall back to PyTorch
+                    pass
         
         safe_print("\n[SCAN] Scanning folder for changes...")
-        self.root.after(0, lambda: self.update_status("Scanning folder...", "orange"))
+        self._safe_after(0, lambda: self.update_status("Scanning folder...", "orange"))
         
         current_disk_files = set()
         new_files_to_add = []
 
-        # O(1) membership lookups — image_paths is a list so 'in' is O(N) per check
         existing_paths_set = set(self.image_paths)
         
-        # Build set of current disk files (relative paths)
         for root, _, files in os.walk(self.folder):
             if self.stop_indexing: break
             for f in files:
@@ -1502,7 +1679,7 @@ class ImageSearchApp:
                         continue
                     current_disk_files.add(rel_path)
                     if rel_path not in existing_paths_set:
-                        new_files_to_add.append(abs_path)  # Pass absolute for processing
+                        new_files_to_add.append(abs_path)
         
         if self.stop_indexing:
             self._handle_stop()
@@ -1536,7 +1713,6 @@ class ImageSearchApp:
             self.is_stopping = False
             safe_print("[SCAN] Index is up to date.")
 
-            # Chain video refresh if pending — same as _handle_stop does when new images were found
             if getattr(self, '_pending_video_refresh', False):
                 self._pending_video_refresh = False
                 if not self.video_cache_file:
@@ -1550,16 +1726,13 @@ class ImageSearchApp:
         if not self.folder or self.clip_model is None: return
         self.is_indexing = True
         
-        # Only recreate ONNX if it's not permanently disabled
         if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
             if not getattr(self.clip_model, 'onnx_disabled', False):
                 try:
                     self.clip_model._create_onnx_session()
                 except:
-                    pass  # Silently fall back to PyTorch
+                    pass
         
-        # Keep old data alive during scan — only wipe AFTER we have new data
-        # This prevents losing existing index if stop is pressed early
         old_paths = self.image_paths[:]
         old_embeddings = self.image_embeddings.copy() if self.image_embeddings is not None else None
         self.image_paths = []
@@ -1576,7 +1749,6 @@ class ImageSearchApp:
                         all_images.append(abs_path)
         
         if self.stop_indexing:
-            # Restore old data if stopped during scan
             self.image_paths = old_paths
             self.image_embeddings = old_embeddings
             self._handle_stop()
@@ -1596,16 +1768,11 @@ class ImageSearchApp:
         """Process images and store RELATIVE paths.
 
         Pipeline:
-        - 8 worker threads each do: open_image() + CLIP preprocess() → tensor
+        - 8 worker threads each do: open_image() + CLIP preprocess() -> tensor
           (preprocessing is stateless transforms — fully thread-safe)
         - 2 batches are always prefetched so the GPU never waits for CPU
         - GPU receives pre-built tensors via encode_tensor_batch() — no serial
           preprocess loop blocking before encode
-
-        Timeline with 2-batch lookahead:
-          Workers:  [load+preprocess N+1][load+preprocess N+2]
-          GPU:      [.to(device) + encode N                  ]
-        CPU and GPU work simultaneously instead of sequentially.
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
         try:
@@ -1615,57 +1782,40 @@ class ImageSearchApp:
             self._pending_image_batches = []
             import torch
 
-            # Use ONNX-aware flag once to decide which worker path to use
             use_onnx = getattr(self.clip_model, 'use_onnx_visual', False) and \
                        getattr(self.clip_model, 'visual_session', None) is not None
 
             if use_onnx:
-                # ONNX path: workers return (path, pil_image) — preprocessing stays in encode_image_batch
                 def load_worker(abs_path):
                     try:
-                        # Limit OpenMP threads per worker — without this each worker spawns
-                        # a full PyTorch thread pool, causing 4 workers × 6 OMP threads = 24
-                        # threads on a 12-thread CPU, saturating it completely.
                         torch.set_num_threads(1)
                         img = open_image(abs_path)
-                        return (abs_path, img, None)   # None = no tensor
+                        return (abs_path, img, None)
                     except Exception:
                         return (abs_path, None, None)
             else:
-                # PyTorch path: workers do load + CLIP preprocess → tensor
-                # preprocess() is a torchvision Compose of stateless transforms — thread-safe
                 clip_preprocess = self.clip_model.preprocess
                 def load_worker(abs_path):
                     try:
-                        # Limit OpenMP threads per worker — without this each worker spawns
-                        # a full PyTorch thread pool, causing 4 workers × 6 OMP threads = 24
-                        # threads on a 12-thread CPU, saturating it completely.
                         torch.set_num_threads(1)
                         img = open_image(abs_path)
                         if img is None:
                             return (abs_path, None, None)
-                        tensor = clip_preprocess(img)   # shape [3, 224, 224]
+                        tensor = clip_preprocess(img)
                         return (abs_path, img, tensor)
                     except Exception:
                         return (abs_path, None, None)
 
             batches = [file_list[i:i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
-            # 4 workers: 1 reads from disk (serialized by _DISK_LOCK), 3 decode in parallel.
-            # More workers would just queue on the lock without adding benefit.
             executor = ThreadPoolExecutor(max_workers=4)
 
             def submit_batch(idx):
-                """Submit all images in batch idx as individual futures."""
                 if idx < len(batches):
                     return [executor.submit(load_worker, p) for p in batches[idx]]
                 return []
 
-            # Prefetch 2 batches ahead — workers run during GPU encode of current batch
             prefetch_queue = [submit_batch(0), submit_batch(1)]
 
-            # 64 = sweet spot: GPU gets fed twice per batch (128/64=2 flushes).
-            # Workers decode the second half while GPU runs the first — no zero gaps.
-            # 128 was too large (one slow image stalls GPU), 32 was too small (too many round-trips).
             STREAM_CHUNK = 64
 
             for batch_idx, batch_paths in enumerate(batches):
@@ -1673,20 +1823,12 @@ class ImageSearchApp:
                     safe_print("\n[INDEX] Stopping batch loop.")
                     break
 
-                # Pop the front (batch_idx, already being loaded)
                 current_futures = prefetch_queue.pop(0)
-
-                # Push the next+2 batch into the back of the queue
                 prefetch_queue.append(submit_batch(batch_idx + 2))
 
-                # ── Streaming encode ─────────────────────────────────────────────────
-                # Instead of waiting for ALL futures then encoding in one shot
-                # (which leaves GPU idle while slowest image loads), we use as_completed
-                # to encode in chunks of STREAM_CHUNK as workers finish.
-                # GPU gets fed continuously; one slow image no longer stalls everything.
-                buf_tensors   = []   # preprocessed tensors  (PyTorch path)
-                buf_pils      = []   # PIL images            (ONNX path)
-                buf_paths     = []   # corresponding abs paths
+                buf_tensors   = []
+                buf_pils      = []
+                buf_paths     = []
 
                 def _flush_buf():
                     if not buf_paths or self.stop_indexing:
@@ -1707,13 +1849,12 @@ class ImageSearchApp:
                             if np_:
                                 self.image_paths.extend(np_)
                                 self._pending_image_batches.append(np.array(nf))
-                                # `processed` lives in the enclosing scope; update via list cell
                                 _proc[0] += len(np_)
                     except Exception as enc_e:
                         safe_print(f"[ERROR] Stream encode chunk: {enc_e}")
                     buf_tensors.clear(); buf_pils.clear(); buf_paths.clear()
 
-                _proc = [0]  # mutable cell so _flush_buf can update processed count
+                _proc = [0]
 
                 for fut in (_as_completed(current_futures) if current_futures else []):
                     if self.stop_indexing:
@@ -1741,16 +1882,12 @@ class ImageSearchApp:
                 if self.stop_indexing:
                     break
 
-                # Flush CUDA cache every 30 batches — empty_cache() is a GPU sync barrier
-                # that can take 100-500 ms on Windows; calling it too often stalls the pipeline
                 if batch_idx % 30 == 0 and batch_idx > 0:
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
                     elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                         torch.mps.empty_cache()
 
-                # Periodic save every 5000 images — protects against crash data loss
-                # Lock ensures live search never reads a partially flushed state
                 if processed > 0 and processed % 5000 < BATCH_SIZE:
                     with self._cache_lock:
                         self._flush_pending_batches()
@@ -1783,21 +1920,13 @@ class ImageSearchApp:
         self._handle_stop()
 
     def _process_video_batch(self, file_list, is_update=False):
-        """Extract frames from videos in parallel, encode with CLIP, store (rel_path, timestamp) tuples.
-
-        Pipeline: up to 3 worker threads each extract frames from different videos simultaneously
-        (CPU-bound OpenCV I/O) while the main thread encodes available results on GPU.
-        Workers do NO GPU calls — they only decode frames and return PIL images.
-        This mirrors the image indexing prefetch pattern: CPU and GPU work in parallel.
-
-        Timeout per cap.read() is 3 s (was 8 s). After 3 consecutive timeouts in one video,
-        the worker abandons remaining frames for that video (broken file guard).
-        """
+        """Extract frames from videos in parallel, encode with CLIP, store (rel_path, timestamp) tuples."""
         try:
             import cv2
         except ImportError:
             safe_print("[VINDEX ERROR] OpenCV not installed. Run: pip install opencv-python")
-            self._safe_after(0, lambda: messagebox.showerror(
+            self._safe_after(0, lambda: QMessageBox.critical(
+                self,
                 "Missing Dependency",
                 "OpenCV is required for video indexing.\n\nInstall it with:\n  pip install opencv-python"
             ))
@@ -1813,20 +1942,11 @@ class ImageSearchApp:
             from concurrent.futures import ThreadPoolExecutor
             import threading as _threading
 
-            # Suppress FFmpeg/h264 codec warnings globally before any VideoCapture opens.
-            # "Missing reference picture", "co located POCs unavailable" etc. are harmless
-            # artifacts of seeking to non-keyframes — they flood the console but don't
-            # affect output. Must be set before VideoCapture() is constructed.
             import os as _os
             _os.environ["OPENCV_LOG_LEVEL"] = "SILENT"
-            # cv2 pip package bundles its own Qt libs which conflict with system Qt on Linux,
-            # causing a fatal crash. Setting offscreen tells cv2 not to load any Qt display
-            # plugin — it only needs video decoding, not display.
-            if os.name != 'nt' and sys.platform != 'darwin':
-                _os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
             try:
                 import cv2 as _cv2pre
-                _cv2pre.setLogLevel(0)   # 0 = LOG_LEVEL_SILENT
+                _cv2pre.setLogLevel(0)
             except Exception:
                 pass
 
@@ -1834,10 +1954,9 @@ class ImageSearchApp:
             existing_set = set(self.video_paths) if is_update else set()
             self._pending_video_batches = []
             CHUNK_SIZE = max(VIDEO_BATCH_SIZE * 2, 32)
-            VIDEO_PARALLEL = 1  # one decode worker — keeps CPU low while still pipelining
+            VIDEO_PARALLEL = 1
 
             def encode_chunk(frames, timestamps, _rel_path, _existing):
-                """Encode one chunk of frames and append to index. GPU — called from main thread only."""
                 if not frames or self.stop_indexing:
                     return
                 try:
@@ -1861,15 +1980,10 @@ class ImageSearchApp:
                         torch.cuda.empty_cache()
 
             def extract_frames(abs_video_path):
-                """Worker: read all sample frames from one video. CPU only — no GPU.
-                Returns (rel_path, [(pil_img, ts), ...])."""
                 rel_path = os.path.relpath(abs_video_path, self.folder).replace('\\', '/')
                 safe_print(f"[VINDEX] Analyzing: {os.path.basename(abs_video_path)}")
                 frames = []
                 cap = None
-                # Redirect stderr once for the entire video — ffmpeg's C lib prints NAL
-                # unit errors directly to fd 2, bypassing Python/OpenCV log levels entirely.
-                # safe_print uses stdout (fd 1) so it is unaffected.
                 _devnull_fd = _os.open(_os.devnull, _os.O_WRONLY)
                 _old_stderr_fd = _os.dup(2)
                 _os.dup2(_devnull_fd, 2)
@@ -1882,13 +1996,10 @@ class ImageSearchApp:
                     fps = cap.get(cv2.CAP_PROP_FPS)
                     total_frames_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
 
-                    # CAP_PROP_FPS and CAP_PROP_FRAME_COUNT unreliable for VBR/MKV/WebM
                     if fps <= 0:
                         fps = 25.0
-                        safe_print(f"[VINDEX] fps=0 for {os.path.basename(abs_video_path)}, assuming 25fps")
                     if total_frames_count <= 0:
                         duration_seconds = 60.0
-                        safe_print(f"[VINDEX] frame_count=0 for {os.path.basename(abs_video_path)}, assuming 60s duration")
                     else:
                         duration_seconds = total_frames_count / fps
 
@@ -1900,7 +2011,7 @@ class ImageSearchApp:
                         frames_to_sample = {duration_seconds / 2.0}
                     else:
                         interval = max(VIDEO_FRAME_INTERVAL, duration_seconds / MAX_FRAMES_PER_VIDEO)
-                        t = interval  # skip t=0 — almost always black intro/title card
+                        t = interval
                         frames_to_sample = set()
                         while t < duration_seconds:
                             frames_to_sample.add(round(t, 3))
@@ -1912,16 +2023,11 @@ class ImageSearchApp:
                     best_brightness = -1.0
                     all_skipped = True
 
-                    # Keyframe-aware seeking — seek to nearest keyframe (cheap, no head thrash),
-                    # then grab forward to exact target. Much faster than random seeking on HDD
-                    # and avoids reading entire video like naive sequential approach.
                     for target_t in sorted(frames_to_sample):
                         if self.stop_indexing:
                             break
                         if is_update and (rel_path, target_t) in existing_set:
                             continue
-                        # Seek to keyframe just before target — AVSEEK_FLAG_BACKWARD finds
-                        # nearest keyframe without full decode, then read() decodes just that frame.
                         cap.set(cv2.CAP_PROP_POS_MSEC, max(0, (target_t - 2.0)) * 1000.0)
                         ret, frame = cap.read()
                         if not ret or frame is None:
@@ -1943,7 +2049,6 @@ class ImageSearchApp:
                     cap.release()
 
                     if all_skipped and best_frame is not None:
-                        safe_print(f"[VINDEX] All frames black for {os.path.basename(abs_video_path)}, using least-dark frame at t={best_frame[1]:.1f}s")
                         return (rel_path, [best_frame])
 
                     return (rel_path, frames)
@@ -1957,16 +2062,11 @@ class ImageSearchApp:
                         pass
                     return (rel_path, [])
                 finally:
-                    # Always restore stderr — even if an exception escaped
                     _os.dup2(_old_stderr_fd, 2)
                     _os.close(_old_stderr_fd)
                     _os.close(_devnull_fd)
-            # --- Submit videos in bounded batches to cap RAM usage ---
-            # Submitting ALL futures at once causes completed futures to pile up in RAM
-            # (each holding up to MAX_FRAMES_PER_VIDEO decoded PIL images).
-            # VIDEO_PARALLEL*2 in-flight at a time keeps all workers busy while preventing
-            # unbounded memory growth on large video collections.
-            SUBMIT_BATCH = VIDEO_PARALLEL * 2  # 6 futures in-flight max
+
+            SUBMIT_BATCH = VIDEO_PARALLEL * 2
             file_idx = 0
 
             with ThreadPoolExecutor(max_workers=VIDEO_PARALLEL) as executor:
@@ -1989,12 +2089,10 @@ class ImageSearchApp:
                             file_idx += 1
                             continue
 
-                        # Track videos that returned no frames (failed to extract)
                         if not frame_list:
                             abs_video_path = file_list[file_idx] if file_idx < len(file_list) else rel_video_path
                             self._failed_videos.append((abs_video_path, "No frames extracted"))
 
-                        # Encode frame_list in chunks on GPU (main thread only)
                         chunk_frames = []
                         chunk_timestamps = []
                         for pil_img, ts in frame_list:
@@ -2011,14 +2109,12 @@ class ImageSearchApp:
 
                         del frame_list
 
-                        # Free GPU memory every 5 videos
                         if file_idx % 5 == 0:
                             if torch and torch.cuda.is_available():
                                 torch.cuda.empty_cache()
                             elif torch and hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                                 torch.mps.empty_cache()
 
-                        # Periodic RAM cleanup every 10 videos
                         if file_idx % 10 == 0:
                             gc.collect()
 
@@ -2029,7 +2125,6 @@ class ImageSearchApp:
                         self._safe_after(0, lambda v=pct, m=msg: self.update_progress(v, m))
                         safe_print(f"\r[VINDEX] {msg}", end='')
 
-                        # Periodic save every 20 videos — protects against crash data loss
                         if file_idx > 0 and file_idx % 20 == 0:
                             with self._cache_lock:
                                 self._flush_pending_batches()
@@ -2050,7 +2145,7 @@ class ImageSearchApp:
                 safe_print(f"[VINDEX] VRAM cleanup warning (non-fatal): {cleanup_err}")
 
         with self._cache_lock:
-            self._flush_pending_batches()  # consolidate accumulated video batches before saving
+            self._flush_pending_batches()
             self._save_video_cache()
         self._handle_video_stop()
 
@@ -2066,7 +2161,6 @@ class ImageSearchApp:
                 except:
                     pass
 
-        # Keep old data alive during scan — only wipe AFTER we have new data
         old_video_paths = self.video_paths[:]
         old_video_embeddings = self.video_embeddings.copy() if self.video_embeddings is not None else None
         self.video_paths = []
@@ -2084,7 +2178,6 @@ class ImageSearchApp:
                         all_videos.append(abs_path)
 
         if self.stop_indexing:
-            # Restore old data if stopped during scan
             self.video_paths = old_video_paths
             self.video_embeddings = old_video_embeddings
             self._handle_video_stop()
@@ -2158,8 +2251,7 @@ class ImageSearchApp:
             self._safe_after(0, self.update_stats)
 
     def _flush_pending_batches(self):
-        """Consolidate accumulated batch lists into single numpy arrays.
-        Called before save and before search to avoid O(N²) concatenation during indexing."""
+        """Consolidate accumulated batch lists into single numpy arrays."""
         if getattr(self, '_pending_image_batches', None):
             batches = self._pending_image_batches
             self._pending_image_batches = []
@@ -2173,7 +2265,7 @@ class ImageSearchApp:
                     del stacked
                     self.image_embeddings = combined
             except MemoryError:
-                safe_print("[ERROR] Out of memory consolidating image embeddings — folder may be too large for available RAM.")
+                safe_print("[ERROR] Out of memory consolidating image embeddings.")
                 self._pending_image_batches = []
 
         if getattr(self, '_pending_video_batches', None):
@@ -2192,12 +2284,9 @@ class ImageSearchApp:
                 safe_print("[ERROR] Out of memory consolidating video embeddings.")
 
     def _write_failed_log(self, failed_list, log_filename):
-        """Append failed files from this index run to a log file in the folder.
-        Only writes if there were actual failures. Each run is separated by a dated header.
-        """
+        """Append failed files from this index run to a log file in the folder."""
         if not failed_list or not self.folder:
             return
-        # Deduplicate — same file should not appear twice in one run
         seen = set()
         unique = []
         for path, reason in failed_list:
@@ -2212,37 +2301,29 @@ class ImageSearchApp:
             with open(log_path, "a", encoding="utf-8") as f:
                 f.write(f"\n=== Index run: {timestamp} ===\n")
                 for path, reason in unique:
-                    f.write(f"{os.path.basename(path)} — {reason}\n")
+                    f.write(f"{os.path.basename(path)} - {reason}\n")
                 f.write(f"=== {len(unique)} failed ===\n")
             safe_print(f"[LOG] Wrote {len(unique)} failed entries to {log_filename}")
         except Exception as e:
             safe_print(f"[LOG] Could not write failed log: {e}")
 
     def _save_cache(self, allow_shrink=False):
-        """Save cache with RELATIVE paths — never overwrites a larger existing cache.
-        Pass allow_shrink=True when a legitimate prune has reduced the count (e.g. refresh after delete)."""
+        """Save cache with RELATIVE paths — never overwrites a larger existing cache."""
         if self.image_embeddings is not None and len(self.image_paths) > 0:
             try:
-                # Never overwrite a larger cache with a smaller one
-                # This protects against partial index runs destroying good data.
-                # Exception: allow_shrink=True when caller has already pruned stale entries.
                 if not allow_shrink and os.path.exists(self.cache_file):
                     try:
-                        # Check existing cache size without loading the full embedding matrix.
-                        # Rough heuristic: file size correlates with entry count.
-                        # Only load paths (first item) using an unpickler that stops after paths.
                         with open(self.cache_file, "rb") as f:
                             up = pickle.Unpickler(f)
-                            existing_paths = up.load()  # loads only the paths list, not the array
+                            existing_paths = up.load()
                         if len(existing_paths) > len(self.image_paths):
-                            safe_print(f"[CACHE] ⚠ Skipping save — existing cache has {len(existing_paths):,} images, current has only {len(self.image_paths):,}")
+                            safe_print(f"[CACHE] Skipping save — existing cache has {len(existing_paths):,} images, current has only {len(self.image_paths):,}")
                             return
                     except Exception:
-                        pass  # Can't read existing — proceed with save
+                        pass
 
                 temp_file = self.cache_file + ".tmp"
                 with open(temp_file, "wb") as f:
-                    # Always save with forward slashes — works on Windows/Linux/Mac
                     universal_paths = [p.replace('\\', '/') for p in self.image_paths]
                     pickle.dump((universal_paths, self.image_embeddings), f, protocol=pickle.HIGHEST_PROTOCOL)
                 if os.path.exists(self.cache_file):
@@ -2253,25 +2334,22 @@ class ImageSearchApp:
                 safe_print(f"[CACHE] Save Error: {e}")
 
     def _save_video_cache(self, allow_shrink=False):
-        """Save video cache — never overwrites a larger existing cache.
-        Pass allow_shrink=True when a legitimate prune has reduced the count."""
+        """Save video cache — never overwrites a larger existing cache."""
         if self.video_embeddings is not None and len(self.video_paths) > 0:
             try:
-                # Never overwrite a larger cache with a smaller one
                 if not allow_shrink and os.path.exists(self.video_cache_file):
                     try:
                         with open(self.video_cache_file, "rb") as f:
                             up = pickle.Unpickler(f)
-                            existing_paths = up.load()  # loads only paths, not the array
+                            existing_paths = up.load()
                         if len(existing_paths) > len(self.video_paths):
-                            safe_print(f"[VCACHE] ⚠ Skipping save — existing cache has {len(existing_paths):,} frames, current has only {len(self.video_paths):,}")
+                            safe_print(f"[VCACHE] Skipping save — existing cache has {len(existing_paths):,} frames, current has only {len(self.video_paths):,}")
                             return
                     except Exception:
-                        pass  # Can't read existing — proceed with save
+                        pass
 
                 temp_file = self.video_cache_file + ".tmp"
                 with open(temp_file, "wb") as f:
-                    # Always save with forward slashes — works on Windows/Linux/Mac
                     universal_video_paths = [(vp.replace('\\', '/'), ts) for vp, ts in self.video_paths]
                     pickle.dump((universal_video_paths, self.video_embeddings), f, protocol=pickle.HIGHEST_PROTOCOL)
                 if os.path.exists(self.video_cache_file):
@@ -2281,19 +2359,10 @@ class ImageSearchApp:
             except Exception as e:
                 safe_print(f"[VCACHE] Save Error: {e}")
 
-    def _safe_after(self, ms, func):
-        """root.after() wrapper safe to call from any thread even after window is destroyed.
-        Silently ignored if the Tk interpreter is gone (e.g. during stop-and-close)."""
-        try:
-            self.root.after(ms, func)
-        except Exception:
-            pass
-
     def _handle_stop(self):
         was_stopped = self.stop_indexing
         count = len(self.image_paths)
 
-        # Write failed image log for this run then reset for next run
         self._write_failed_log(self._failed_images, "makimus_skipped_images.txt")
         self._failed_images = []
 
@@ -2301,37 +2370,28 @@ class ImageSearchApp:
         self.stop_indexing = False
         self.is_stopping = False
         
-        # Force VRAM release (only if ONNX was used)
         if self.clip_model and hasattr(self.clip_model, 'model'):
             import torch
             try:
                 safe_print("[VRAM] Forcing memory release...")
-                
-                # Only destroy ONNX if it was actually being used
                 if not getattr(self.clip_model, 'onnx_disabled', False):
                     self.clip_model._destroy_onnx_session()
-                
-                # PyTorch cleanup
                 original_device = self.clip_model.device
                 self.clip_model.model.cpu()
-                
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     torch.cuda.synchronize()
                 elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                     torch.mps.empty_cache()
-                
                 gc.collect()
-                
-                # Move model back to GPU
                 self.clip_model.model.to(original_device)
                 safe_print("[VRAM] Memory released, model back on GPU")
             except Exception as e:
                 safe_print(f"[VRAM] Cleanup warning: {e}")
         
-        self._safe_after(0, lambda: self.btn_stop.config(text="STOP INDEX"))
-        self._safe_after(0, lambda: self.progress.configure(value=0))
-        self._safe_after(0, lambda: self.progress_label.config(text=""))
+        self._safe_after(0, lambda: self.btn_stop.setText("STOP INDEX"))
+        self._safe_after(0, lambda: self.progress.setValue(0))
+        self._safe_after(0, lambda: self.progress_label.setText(""))
         self._safe_after(0, self.update_stats)
 
         if was_stopped:
@@ -2346,23 +2406,22 @@ class ImageSearchApp:
                 self._safe_after(100, action)
             elif count > 0:
                 try:
-                    query = self.query_entry.get().strip()
+                    query = self.query_entry.text().strip()
                     if query:
                         self._safe_after(500, self.do_search)
                 except Exception:
                     pass
         else:
-            # Chain video refresh if pending
             if getattr(self, '_pending_video_refresh', False):
                 self._pending_video_refresh = False
                 if not self.video_cache_file:
                     self.video_cache_file = os.path.join(self.folder, self.get_video_cache_filename())
                 self._safe_after(200, lambda: self.start_indexing(mode="video_refresh"))
-                return  # messagebox shown after video finishes
+                return
             self._safe_after(0, lambda: self.update_status("Indexing Complete", "green"))
-            self._safe_after(0, lambda: messagebox.showinfo("Done", f"Index complete.\nTotal images: {count:,}"))
+            self._safe_after(0, lambda: QMessageBox.information(self, "Done", f"Index complete.\nTotal images: {count:,}"))
             try:
-                query = self.query_entry.get().strip()
+                query = self.query_entry.text().strip()
                 if query:
                     self._safe_after(500, self.do_search)
             except Exception:
@@ -2373,7 +2432,6 @@ class ImageSearchApp:
         n_frames = len(self.video_paths)
         n_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
 
-        # Write failed video log for this run then reset for next run
         self._write_failed_log(self._failed_videos, "makimus_skipped_videos.txt")
         self._failed_videos = []
 
@@ -2398,9 +2456,9 @@ class ImageSearchApp:
             except Exception as e:
                 safe_print(f"[VRAM] Video cleanup warning: {e}")
 
-        self._safe_after(0, lambda: self.btn_stop.config(text="STOP INDEX"))
-        self._safe_after(0, lambda: self.progress.configure(value=0))
-        self._safe_after(0, lambda: self.progress_label.config(text=""))
+        self._safe_after(0, lambda: self.btn_stop.setText("STOP INDEX"))
+        self._safe_after(0, lambda: self.progress.setValue(0))
+        self._safe_after(0, lambda: self.progress_label.setText(""))
         self._safe_after(0, self.update_stats)
 
         if was_stopped:
@@ -2413,11 +2471,11 @@ class ImageSearchApp:
                 self._safe_after(100, action)
         else:
             self._safe_after(0, lambda: self.update_status("Video indexing complete", "green"))
-            self._safe_after(0, lambda: messagebox.showinfo(
-                "Done", f"Video index complete.\n{n_videos:,} videos | {n_frames:,} frames"
+            self._safe_after(0, lambda: QMessageBox.information(
+                self, "Done", f"Video index complete.\n{n_videos:,} videos | {n_frames:,} frames"
             ))
             try:
-                query = self.query_entry.get().strip()
+                query = self.query_entry.text().strip()
                 if query:
                     self._safe_after(500, self.do_search)
             except Exception:
@@ -2426,19 +2484,19 @@ class ImageSearchApp:
     def delete_cache(self):
         if not self.folder: return
 
-        # Show exactly what will be destroyed so user knows the stakes
         img_count = len(self.image_paths)
         vid_count = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
         frame_count = len(self.video_paths)
 
-        msg = "⚠ This will permanently DELETE cache files and re-index from scratch.\n\n"
+        msg = "This will permanently DELETE cache files and re-index from scratch.\n\n"
         if img_count:
-            msg += f"  • {img_count:,} images will be re-indexed\n"
+            msg += f"  - {img_count:,} images will be re-indexed\n"
         if vid_count:
-            msg += f"  • {vid_count:,} videos ({frame_count:,} frames) will be re-indexed\n"
+            msg += f"  - {vid_count:,} videos ({frame_count:,} frames) will be re-indexed\n"
         msg += "\nThis cannot be undone. Continue?"
 
-        if not messagebox.askyesno("Delete Cache & Re-Index?", msg, icon="warning"):
+        if QMessageBox.question(self, "Delete Cache & Re-Index?", msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
 
         try:
@@ -2464,9 +2522,8 @@ class ImageSearchApp:
 
     def force_reindex(self):
         if not self.folder:
-            messagebox.showwarning("Warning", "Select a folder first.")
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
             return
-        # Chain video refresh after image refresh if video index is loaded
         if self.video_paths or self.video_embeddings is not None:
             self._pending_video_refresh = True
         self.start_indexing(mode="refresh")
@@ -2479,35 +2536,35 @@ class ImageSearchApp:
 
     def index_videos(self):
         if not self.folder:
-            messagebox.showwarning("Warning", "Select a folder first.")
+            QMessageBox.warning(self, "Warning", "Select a folder first.")
             return
         if self.clip_model is None:
-            messagebox.showwarning("Wait", "Model is still loading...")
+            QMessageBox.warning(self, "Wait", "Model is still loading...")
             return
         if not self.video_cache_file:
             self.video_cache_file = os.path.join(self.folder, self.get_video_cache_filename())
         if self.video_paths:
             vid_count = len(set(vp for vp, _ in self.video_paths))
             frame_count = len(self.video_paths)
-            answer = messagebox.askyesno(
+            answer = QMessageBox.question(
+                self,
                 "Video Index",
                 f"Video index has {vid_count:,} videos ({frame_count:,} frames).\n\n"
                 f"Yes = Refresh (add new videos only, keeps existing)\n"
-                f"No = Cancel (do nothing)"
+                f"No = Cancel (do nothing)",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
-            if not answer:
-                return  # User pressed No — do nothing, keep existing index safe
+            if answer != QMessageBox.StandardButton.Yes:
+                return
             mode = "video_refresh"
         else:
             mode = "video_full"
         self.start_indexing(mode=mode)
 
+
     def _deduplicate_video_results(self, all_results):
-        """
-        For video results, keep only the best scoring frame per video file.
-        Image results are kept as-is.
-        """
-        seen_videos = {}  # abs_video_path -> (score, timestamp)
+        """For video results, keep only the best scoring frame per video file."""
+        seen_videos = {}
         deduped = []
 
         for item in all_results:
@@ -2518,22 +2575,16 @@ class ImageSearchApp:
             else:
                 deduped.append(item)
 
-        # Add best frame for each video
         for path, (score, timestamp) in seen_videos.items():
             deduped.append((score, path, "video", {"timestamp": timestamp}))
 
         return deduped
 
     def parse_query(self, query):
-        """
-        Parse a query string into positive and negative terms.
-        Supports: -word or -"multi word phrase" for exclusions.
-        Returns (positive_terms, negative_terms) as lists of strings.
-        """
+        """Parse a query string into positive and negative terms."""
         positive_terms = []
         negative_terms = []
 
-        # Match -"quoted phrase", -word, "quoted phrase", or plain word
         pattern = r'(-?"[^"]+"|[-\w]+)'
         tokens = re.findall(pattern, query)
 
@@ -2558,14 +2609,15 @@ class ImageSearchApp:
         has_video_data = (self.video_embeddings is not None and len(self.video_paths) > 0) or \
                          bool(getattr(self, '_pending_video_batches', None))
         if not has_image_data and not has_video_data:
-            messagebox.showwarning("No Data", "Index is empty. Please select a folder.")
+            QMessageBox.warning(self, "No Data", "Index is empty. Please select a folder.")
             return
 
-        query = self.query_entry.get().strip()
+        query = self.query_entry.text().strip()
         if not query:
             safe_print("[SEARCH] Empty query")
             self.update_status("Enter a search term", "orange")
-            messagebox.showinfo(
+            QMessageBox.information(
+                self,
                 "Empty Search",
                 "Please type something in the search box to search.\n\n"
                 "To search by image similarity, use the Image button next to the search box."
@@ -2578,49 +2630,45 @@ class ImageSearchApp:
         self.search_thread.start()
 
     def search(self, query, generation):
-        # Only recreate ONNX if it was successfully created before (not permanently disabled)
         if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
             if not getattr(self.clip_model, 'onnx_disabled', False):
                 try:
                     self.clip_model._create_onnx_session()
                 except:
-                    pass  # Silently fall back to PyTorch
+                    pass
         
         self.search_generation = generation
         self.is_searching = True
-        self.stop_search = False  # reset BEFORE anything else to prevent race with thumbnail queue
-        self.thumbnail_count = 0  # reset immediately in search thread, don't wait for clear_results
+        self.stop_search = False
+        self.thumbnail_count = 0
         
         safe_print(f"[SEARCH] Generation: {generation}, Query: '{query}'")
         
-        # Clear old results and free RAM before new search
-        self.root.after(0, self.clear_results)
+        QTimer.singleShot(0, self.clear_results)
         self.total_found = 0
         
         if not self.is_indexing:
-            self.root.after(0, lambda: self.update_status("Searching...", "orange"))
-            self.root.after(0, lambda: self.progress.config(mode='indeterminate'))
-            self.root.after(0, self.progress.start)
+            QTimer.singleShot(0, lambda: self.update_status("Searching...", "orange"))
+            QTimer.singleShot(0, lambda: self.progress.setRange(0, 0))
             
         try:
             positive_terms, negative_terms = self.parse_query(query)
 
             if not positive_terms:
                 safe_print("[SEARCH] No positive search terms found")
-                self.root.after(0, lambda: self.update_status("No positive search terms", "orange"))
+                QTimer.singleShot(0, lambda: self.update_status("No positive search terms", "orange"))
                 self.is_searching = False
                 return
 
             safe_print(f"[SEARCH] Positive: {positive_terms}, Negative: {negative_terms}")
             safe_print(f"[SEARCH] Encoding query...")
 
-            # Encode positive terms (average if multiple)
             pos_query = " ".join(positive_terms)
             text_embed = self.clip_model.encode_text([pos_query])
 
             if text_embed is None or text_embed.size == 0:
                 safe_print("[SEARCH ERROR] Text encoding returned empty array")
-                self.root.after(0, lambda: self.update_status("Search failed - text encoding error", "red"))
+                QTimer.singleShot(0, lambda: self.update_status("Search failed - text encoding error", "red"))
                 self.is_searching = False
                 return
 
@@ -2630,7 +2678,6 @@ class ImageSearchApp:
 
             safe_print(f"[SEARCH] Computing similarities...")
 
-            # Encode negative terms if any
             neg_embed = None
             if negative_terms:
                 neg_query = " ".join(negative_terms)
@@ -2646,26 +2693,21 @@ class ImageSearchApp:
                 return
 
             if not self.is_indexing:
-                self.root.after(0, self.progress.stop)
-                self.root.after(0, lambda: self.progress.config(mode='determinate'))
+                QTimer.singleShot(0, lambda: self.progress.setRange(0, 100))
 
-            show_images = self.show_images_var.get() if self.show_images_var else True
-            show_videos = self.show_videos_var.get() if self.show_videos_var else True
+            show_images = self.show_images_cb.isChecked()
+            show_videos = self.show_videos_cb.isChecked()
             all_results = []
 
-            # Flush any pending batches from concurrent indexing before search
             with self._cache_lock:
                 self._flush_pending_batches()
 
-            min_score = self.score_var.get()
+            min_score = self.score_slider.value() / 100.0
 
-            # Search image index
             if show_images and self.image_embeddings is not None and len(self.image_paths) > 0:
                 sims_img = (self.image_embeddings @ text_embed.T).flatten()
                 if neg_embed is not None:
                     sims_img = sims_img - (self.image_embeddings @ neg_embed.T).flatten()
-                # Filter entirely in numpy before building Python list — avoids O(N) Python loop
-                # np.where returns only indices above threshold (often <1% of total)
                 above = np.where(sims_img >= min_score)[0]
                 for i in above:
                     rel_path = self.image_paths[i]
@@ -2673,7 +2715,6 @@ class ImageSearchApp:
                         abs_path = os.path.join(self.folder, rel_path)
                         all_results.append((float(sims_img[i]), abs_path, "image", {}))
 
-            # Search video index
             if show_videos and self.video_embeddings is not None and len(self.video_paths) > 0:
                 sims_vid = (self.video_embeddings @ text_embed.T).flatten()
                 if neg_embed is not None:
@@ -2687,37 +2728,33 @@ class ImageSearchApp:
 
             safe_print(f"[SEARCH] Found {len(all_results)} total results")
 
-            # Deduplicate video results — only if toggle is on
-            if self.dedup_video_var.get():
+            if self.dedup_video_cb.isChecked():
                 all_results = self._deduplicate_video_results(all_results)
 
-            # Sort ALL results by score, store in memory
             all_results.sort(key=lambda x: x[0], reverse=True)
-            # (score threshold already applied via numpy np.where above — no second filter needed)
             self.all_search_results = all_results
             self.total_found = len(all_results)
             self.show_more_offset = 0
 
             if all_results:
-                # Page 1 — cap at 100 to stay under Tkinter's 32,767px canvas limit
-                initial_n = max(10, self.top_n_var.get())
+                initial_n = max(10, self.top_n_slider.value() * 10)
                 first_batch = all_results[:initial_n]
                 self.show_more_offset = len(first_batch)
 
                 safe_print(f"[SEARCH] Displaying first {len(first_batch)} of {self.total_found} results")
 
-                # Suggest lowering score if very few results
                 if self.total_found < 6:
-                    self.root.after(500, self._maybe_suggest_lower_score)
+                    QTimer.singleShot(500, self._maybe_suggest_lower_score)
 
-                cw = max(self.canvas.winfo_width(), CELL_WIDTH)
+                vp_width = self.scroll_area.viewport().width()
+                cw = max(vp_width, CELL_WIDTH)
                 self.render_cols = max(1, cw // CELL_WIDTH)
 
                 self.start_thumbnail_loader(first_batch, generation)
             else:
                 safe_print("[SEARCH] No results found")
-                self.root.after(0, lambda: self.update_status("No results found", "green"))
-                self.root.after(100, self._maybe_suggest_lower_score)
+                QTimer.singleShot(0, lambda: self.update_status("No results found", "green"))
+                QTimer.singleShot(100, self._maybe_suggest_lower_score)
                 self.is_searching = False
                 
         except Exception as e:
@@ -2725,37 +2762,36 @@ class ImageSearchApp:
                 safe_print(f"[SEARCH ERROR] {e}")
                 import traceback
                 traceback.print_exc()
-                self.root.after(0, lambda: self.update_status("Search error - check console", "red"))
+                QTimer.singleShot(0, lambda: self.update_status("Search error - check console", "red"))
             self.is_searching = False
 
     def image_search(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png *.webp")])
+        path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "Images (*.jpg *.jpeg *.png *.webp)")
         if not path: return
         gen = self.search_generation + 1
         self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
         self.search_thread.start()
 
     def _image_search(self, path, generation):
-        # Only recreate ONNX if it's not permanently disabled
         if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
             if not getattr(self.clip_model, 'onnx_disabled', False):
                 try:
                     self.clip_model._create_onnx_session()
                 except:
-                    pass  # Silently fall back to PyTorch
+                    pass
         
         self.search_generation = generation
         self.is_searching = True
-        self.stop_search = False  # reset BEFORE anything else to prevent race with thumbnail queue
-        self.thumbnail_count = 0  # reset immediately in search thread
+        self.stop_search = False
+        self.thumbnail_count = 0
         
-        # Clear old results and free RAM before new search
-        self.root.after(0, self.clear_results)
+        QTimer.singleShot(0, self.clear_results)
         
-        cw = max(self.canvas.winfo_width(), CELL_WIDTH)
+        vp_width = self.scroll_area.viewport().width()
+        cw = max(vp_width, CELL_WIDTH)
         self.render_cols = max(1, cw // CELL_WIDTH)
         
-        self.root.after(0, lambda: self.update_status("Searching by image...", "orange"))
+        QTimer.singleShot(0, lambda: self.update_status("Searching by image...", "orange"))
         
         try:
             img = open_image(path)
@@ -2765,10 +2801,10 @@ class ImageSearchApp:
             features = self.clip_model.encode_image_batch([img])
             emb = features[0]
             
-            show_images = self.show_images_var.get() if self.show_images_var else True
-            show_videos = self.show_videos_var.get() if self.show_videos_var else True
+            show_images = self.show_images_cb.isChecked()
+            show_videos = self.show_videos_cb.isChecked()
             all_results = []
-            min_score = self.score_var.get()
+            min_score = self.score_slider.value() / 100.0
 
             if show_images and self.image_embeddings is not None:
                 sims_img = (self.image_embeddings @ emb).flatten()
@@ -2789,25 +2825,24 @@ class ImageSearchApp:
                         all_results.append((float(sims_vid[i]), abs_vid_path, "video", {"timestamp": timestamp}))
 
             if all_results:
-                if self.dedup_video_var.get():
+                if self.dedup_video_cb.isChecked():
                     all_results = self._deduplicate_video_results(all_results)
                 all_results.sort(key=lambda x: x[0], reverse=True)
-                # (score threshold already applied via numpy np.where above)
                 self.all_search_results = all_results
                 self.total_found = len(all_results)
                 self.show_more_offset = 0
 
-                initial_n = max(10, self.top_n_var.get())
+                initial_n = max(10, self.top_n_slider.value() * 10)
                 first_batch = all_results[:initial_n]
                 self.show_more_offset = len(first_batch)
 
                 if self.total_found < 6:
-                    self.root.after(500, self._maybe_suggest_lower_score)
+                    QTimer.singleShot(500, self._maybe_suggest_lower_score)
 
                 self.start_thumbnail_loader(first_batch, generation)
             else:
-                self.root.after(0, lambda: self.update_status("No matches", "green"))
-                self.root.after(100, self._maybe_suggest_lower_score)
+                QTimer.singleShot(0, lambda: self.update_status("No matches", "green"))
+                QTimer.singleShot(100, self._maybe_suggest_lower_score)
                 self.is_searching = False
         except Exception as e:
             safe_print(f"[IMAGE SEARCH ERROR] {e}")
@@ -2820,7 +2855,7 @@ class ImageSearchApp:
         t = Thread(target=self.load_thumbnails_worker, args=(results, generation), daemon=True)
         self._thumbnail_worker_thread = t
         t.start()
-        self.root.after(10, lambda: self.check_thumbnail_queue(generation))
+        QTimer.singleShot(10, lambda: self.check_thumbnail_queue(generation))
 
     def load_thumbnails_worker(self, results, generation):
         loaded = 0
@@ -2833,7 +2868,6 @@ class ImageSearchApp:
             try:
                 if result_type == "image":
                     if path.lower().endswith(RAW_EXTS):
-                        # RAW files need rawpy — PIL cannot decode them natively
                         try:
                             import rawpy
                             with rawpy.imread(path) as raw:
@@ -2855,14 +2889,12 @@ class ImageSearchApp:
                     img.thumbnail(THUMBNAIL_SIZE)
                 elif result_type == "video":
                     try:
-                        # Prevent cv2's bundled Qt from crashing on Linux
-                        if os.name != 'nt' and sys.platform != 'darwin':
-                            os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
                         import cv2
                     except ImportError:
                         if not getattr(self, '_cv2_missing_warned', False):
                             self._cv2_missing_warned = True
-                            self.root.after(0, lambda: messagebox.showwarning(
+                            QTimer.singleShot(0, lambda: QMessageBox.warning(
+                                self,
                                 "Missing Dependency",
                                 "OpenCV is not installed - video thumbnails cannot be displayed.\n\n"
                                 "Install it with:\n    pip install opencv-python"
@@ -2906,33 +2938,24 @@ class ImageSearchApp:
             
             if time.time() - start_time > 0.1: break
         
-        # Update scrollregion once per cycle, not once per thumbnail
-        if processed_this_cycle > 0:
-            self.results_frame.update_idletasks()
-            self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        
         done = self.thumbnail_count
         
         if processed_this_cycle > 0:
             safe_print(f"[THUMBNAILS] Displayed {done} results", end='\r')
         
         if not self.is_indexing:
-            page_size = max(10, self.top_n_var.get())
+            page_size = max(10, self.top_n_slider.value() * 10)
             total_pages = max(1, -(-self.total_found // page_size)) if self.total_found > 0 else 1
-            # current_page = which page is currently DISPLAYED (offset already advanced to next page)
-            # so displayed page = (offset - page_size) // page_size + 1 = offset // page_size
             current_page = max(1, (self.show_more_offset - 1) // page_size + 1) if self.show_more_offset > 0 else 1
-            self.progress_label.config(text=f"Page {current_page} of {total_pages}  —  {self.total_found:,} total results")
+            self.progress_label.setText(f"Page {current_page} of {total_pages}  -  {self.total_found:,} total results")
 
-        # Queue is empty — check if all worker threads are done
         if not self.thumbnail_queue.empty():
-            self.root.after(10, lambda: self.check_thumbnail_queue(generation))
+            QTimer.singleShot(10, lambda: self.check_thumbnail_queue(generation))
             return
 
-        # Give worker thread a tiny moment to push final items then re-check once
         active_thread = getattr(self, '_thumbnail_worker_thread', None)
         if active_thread and active_thread.is_alive():
-            self.root.after(20, lambda: self.check_thumbnail_queue(generation))
+            QTimer.singleShot(20, lambda: self.check_thumbnail_queue(generation))
             return
 
         # All done
@@ -2940,41 +2963,116 @@ class ImageSearchApp:
         if not self.is_indexing:
             safe_print(f"\n[THUMBNAILS] Display complete: {done} shown of {self.total_found:,} total")
             self.update_status(f"Found {self.total_found:,} results", "green")
-        # Ensure scrollregion recalculated after last thumbnails added
-        self.results_frame.update_idletasks()
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-        self.root.after(0, self._update_show_more_button)
+        QTimer.singleShot(0, self._update_show_more_button)
 
     def _update_show_more_button(self):
         """Update page navigation buttons and page label"""
-        page_size = max(10, self.top_n_var.get())  # use slider value directly, no cap
+        page_size = max(10, self.top_n_slider.value() * 10)
         total = len(self.all_search_results)
         if total == 0:
-            self.show_more_frame.pack_forget()
+            self.page_nav_widget.setVisible(False)
             return
 
         current_page = max(1, (self.show_more_offset - 1) // page_size + 1) if self.show_more_offset > 0 else 1
-        total_pages = max(1, -(-total // page_size))  # ceiling division
+        total_pages = max(1, -(-total // page_size))
 
-        self.page_label.config(text=f"Page {current_page} of {total_pages}")
+        self.page_label.setText(f"Page {current_page} of {total_pages}")
+        self.prev_page_btn.setEnabled(self.show_more_offset > page_size)
+        self.show_more_btn.setEnabled(self.show_more_offset < total)
+        self.page_nav_widget.setVisible(True)
 
-        # Prev button — only if not on first page
-        self.prev_page_btn.config(state="normal" if self.show_more_offset > page_size else "disabled")
+    def add_result_thumbnail(self, score, path, pil_img, result_type="image", metadata=None):
+        if self.stop_search: return
+        if metadata is None:
+            metadata = {}
+        
+        cols = max(1, getattr(self, "render_cols", 1))
+        idx = self.thumbnail_count
+        row, col = divmod(idx, cols)
+        self.thumbnail_count += 1
+        
+        card = ResultCard()
+        card._image_path = path
+        card._on_single_click = self.handle_single_click
+        card._on_double_click = self.handle_double_click
+        card._on_context_menu = self._show_card_context_menu
+        
+        # Prune cache
+        if len(self.thumbnail_images) >= MAX_THUMBNAIL_CACHE:
+            oldest = list(self.thumbnail_images.keys())[:len(self.thumbnail_images) - MAX_THUMBNAIL_CACHE + 1]
+            for k in oldest:
+                del self.thumbnail_images[k]
+        
+        pixmap = pil_to_pixmap(pil_img)
+        pixmap = pixmap.scaled(THUMBNAIL_SIZE[0], THUMBNAIL_SIZE[1],
+                               Qt.AspectRatioMode.KeepAspectRatio,
+                               Qt.TransformationMode.SmoothTransformation)
+        
+        cache_key = f"{path}@{metadata.get('timestamp',0)}" if result_type == "video" else path
+        self.thumbnail_images[cache_key] = pixmap
+        
+        if result_type == "video":
+            badge = QLabel("VIDEO", card)
+            badge.setStyleSheet(f"background-color: {ORANGE}; color: #000000; font-size: 7px; font-weight: bold; padding: 1px 3px;")
+            badge.move(4, 4)
+            badge.raise_()
+        
+        card.img_label.setPixmap(pixmap)
+        card.select_cb.setChecked(path in self.selected_images)
+        card.select_cb.stateChanged.connect(
+            lambda state, p=path: self._set_card_selection_by_path(p, state == Qt.CheckState.Checked.value))
+        
+        if result_type == "video":
+            ts = metadata.get("timestamp", 0.0)
+            m, s = int(ts)//60, int(ts)%60
+            name = os.path.basename(path)[:25]
+            text = f"{score:.3f}\n{name}\nt={m}:{s:02d}"
+        else:
+            name = os.path.basename(path)[:25]
+            text = f"{score:.3f}\n{name}"
+        card.info_label.setText(text)
+        
+        self.scroll_area._grid.addWidget(card, row, col)
 
-        # Next button — only if more results remain
-        self.show_more_btn.config(
-            state="normal" if self.show_more_offset < total else "disabled",
-            text="Next Page →"
-        )
+    def clear_results(self, keep_results=False):
+        """Clear search results and free RAM from thumbnails"""
+        for card in self._get_all_cards():
+            self.scroll_area._grid.removeWidget(card)
+            card.deleteLater()
+        
+        self.thumbnail_count = 0
+        self.page_nav_widget.setVisible(False)
+        
+        if not keep_results:
+            self.thumbnail_images.clear()
+            self.all_search_results = []
+            self.show_more_offset = 0
+            self.total_found = 0
+            self.selected_images.clear()
+        
+        gc.collect()
+        self.scroll_area.verticalScrollBar().setValue(0)
 
-        self.show_more_frame.pack(fill="x", padx=8, pady=(0, 6))
+    def _maybe_suggest_lower_score(self):
+        """Show a dismissable hint when search returns very few or no results"""
+        current_score = self.score_slider.value() / 100.0
+        if current_score > 0.05:
+            QMessageBox.information(
+                self,
+                "Few Results Found",
+                f"Only {self.total_found} result(s) found at similarity score {current_score:.2f}.\n\n"
+                f"Things to check:\n"
+                f"- Make sure the Image and/or Video filter buttons are enabled next to the Deselect All button\n"
+                f"- Try lowering the Similarity Score slider to find more matches\n"
+                f"  - Text search works well at 0.15-0.30\n"
+                f"  - Image search works well at 0.60-0.85"
+            )
 
     def prev_page_results(self):
         """Go back one page"""
         if self.is_searching or not self.all_search_results:
             return
-        page_size = max(10, self.top_n_var.get())
-        # Go back two page_sizes from current offset (one for current page, one for prev)
+        page_size = max(10, self.top_n_slider.value() * 10)
         new_offset = max(0, self.show_more_offset - (page_size * 2))
         prev_batch = self.all_search_results[new_offset:new_offset + page_size]
         if not prev_batch:
@@ -2995,27 +3093,24 @@ class ImageSearchApp:
         t = Thread(target=self.load_thumbnails_worker, args=(prev_batch, gen), daemon=True)
         self._thumbnail_worker_thread = t
         t.start()
-        self.root.after(10, lambda: self.check_thumbnail_queue(gen))
+        QTimer.singleShot(10, lambda: self.check_thumbnail_queue(gen))
 
     def show_more_results(self):
         """Clear current page widgets and load next results"""
         if self.is_searching or not self.all_search_results:
             return
-        page_size = max(10, self.top_n_var.get())
+        page_size = max(10, self.top_n_slider.value() * 10)
         next_batch = self.all_search_results[self.show_more_offset:self.show_more_offset + page_size]
         if not next_batch:
             return
 
-        # Remember state before clearing
         saved_results = self.all_search_results
         saved_total = self.total_found
         new_offset = self.show_more_offset + len(next_batch)
 
-        # Clear widgets only — keep_results=True so all_search_results is NOT wiped
         self.selected_images.clear()
         self.clear_results(keep_results=True)
 
-        # Restore state that clear_results didn't touch (thumbnail_count reset by clear_results)
         self.all_search_results = saved_results
         self.total_found = saved_total
         self.show_more_offset = new_offset
@@ -3025,146 +3120,48 @@ class ImageSearchApp:
         t = Thread(target=self.load_thumbnails_worker, args=(next_batch, gen), daemon=True)
         self._thumbnail_worker_thread = t
         t.start()
-        self.root.after(10, lambda: self.check_thumbnail_queue(gen))
+        QTimer.singleShot(10, lambda: self.check_thumbnail_queue(gen))
 
-    def add_result_thumbnail(self, score, path, pil_img, result_type="image", metadata=None):
-        if self.stop_search: return
-        if metadata is None:
-            metadata = {}
-
-        # Unique cache key — video frames need per-frame uniqueness
-        if result_type == "video":
-            ts = metadata.get("timestamp", 0.0)
-            cache_key = f"{path}@{ts}"
-        else:
-            cache_key = path
-
-        cols = max(1, getattr(self, "render_cols", 1))
-        idx = self.thumbnail_count
-        row, col = divmod(idx, cols)
-        self.thumbnail_count += 1
-
-        f = tk.Frame(self.results_frame, bg=CARD_BG, bd=1, relief="solid")
-        f.grid(row=row, column=col, padx=6, pady=6)
-        f.configure(width=CELL_WIDTH, height=CELL_HEIGHT)
-        f.pack_propagate(False)
-        f._image_path = path  # always the file path (not timestamp) for Copy/Move/Delete
-
-        try:
-            photo = ImageTk.PhotoImage(pil_img)
-
-            # Prune oldest thumbnails if cache exceeds limit
-            if len(self.thumbnail_images) >= MAX_THUMBNAIL_CACHE:
-                oldest_keys = list(self.thumbnail_images.keys())[:len(self.thumbnail_images) - MAX_THUMBNAIL_CACHE + 1]
-                for k in oldest_keys:
-                    del self.thumbnail_images[k]
-
-            self.thumbnail_images[cache_key] = photo
-
-            # VIDEO badge
-            if result_type == "video":
-                badge = tk.Label(f, text="VIDEO", bg=ORANGE, fg="#000000",
-                         font=("Segoe UI", 7, "bold"), padx=3, pady=1)
-                badge.pack(anchor="nw", padx=4, pady=(4, 0))
-                badge.bind("<Button-1>", lambda e, p=path, w=f: self.handle_single_click(p, w))
-                badge.bind("<Double-Button-1>", lambda e: self.handle_double_click(path))
-
-            lbl = tk.Label(f, image=photo, bg=CARD_BG)
-            lbl.image = photo  # keep reference alive tied to widget, prevents GC blank images
-            lbl.pack(pady=4)
-
-            lbl.bind("<Button-1>", lambda e, p=path, w=f: self.handle_single_click(p, w))
-            lbl.bind("<Double-Button-1>", lambda e: self.handle_double_click(path))
-            lbl.bind("<Button-3>", lambda e, p=path: self._show_card_context_menu(e, p))
-            f.bind("<Button-3>", lambda e, p=path: self._show_card_context_menu(e, p))
-
-            var = tk.BooleanVar(value=(path in self.selected_images))
-            cb = tk.Checkbutton(f, text="Select", variable=var, bg=CARD_BG, fg=FG,
-                                selectcolor=BG, command=lambda p=path, v=var: self._set_card_selection_by_path(p, v.get()))
-            cb.var = var   # keep reference alive — GC would destroy a local BooleanVar
-            cb.pack()
-
-            name = os.path.basename(path)
-            if len(name) > 25: name = name[:22] + "..."
-
-            if result_type == "video":
-                ts = metadata.get("timestamp", 0.0)
-                minutes = int(ts) // 60
-                seconds = int(ts) % 60
-                label_text = f"{score:.3f}\n{name}\nt={minutes}:{seconds:02d}"
-            else:
-                label_text = f"{score:.3f}\n{name}"
-
-            txt_lbl = tk.Label(f, text=label_text, bg=CARD_BG, fg=FG,
-                     font=("Segoe UI", 9), wraplength=180, justify="center")
-            txt_lbl.pack(pady=2)
-            txt_lbl.bind("<Button-1>", lambda e, p=path, w=f: self.handle_single_click(p, w))
-            txt_lbl.bind("<Double-Button-1>", lambda e: self.handle_double_click(path))
-        except:
-            f.destroy()
-            self.thumbnail_count -= 1  # undo the increment so grid has no gaps
 
     def handle_single_click(self, path, widget=None):
-        if widget:
-            self._scroll_to_widget(widget)
-        if self.click_timer:
-            self.root.after_cancel(self.click_timer)
-        self.click_timer = self.root.after(400, lambda: self.open_in_explorer(path))
-
-    def _scroll_to_widget(self, widget):
-        """Auto-scroll canvas to ensure the clicked card is fully visible."""
+        if self.click_timer.isActive():
+            self.click_timer.stop()
         try:
-            self.results_frame.update_idletasks()
-            w_top = widget.winfo_y()
-            w_bottom = w_top + widget.winfo_height()
-            total_height = self.results_frame.winfo_height()
-            c_height = self.canvas.winfo_height()
-            if total_height <= 0 or c_height <= 0:
-                return
-            y_view = self.canvas.yview()
-            v_top = y_view[0] * total_height
-            v_bottom = y_view[1] * total_height
-            padding = 15
-            if w_bottom > v_bottom:
-                new_fraction = (w_bottom + padding - c_height) / total_height
-                self.canvas.yview_moveto(new_fraction)
-            elif w_top < v_top:
-                new_fraction = max(0.0, (w_top - padding) / total_height)
-                self.canvas.yview_moveto(new_fraction)
-        except Exception as e:
-            safe_print(f"[SCROLL] Error: {e}")
+            self.click_timer.timeout.disconnect()
+        except:
+            pass
+        self.click_timer.timeout.connect(lambda: self.open_in_explorer(path))
+        self.click_timer.start(400)
 
     def handle_double_click(self, path):
-        if self.click_timer:
-            self.root.after_cancel(self.click_timer)
-            self.click_timer = None
+        self.click_timer.stop()
+        try:
+            self.click_timer.timeout.disconnect()
+        except:
+            pass
         self.open_image_viewer(path)
 
     def open_in_explorer(self, path):
         """Open file location - path is already absolute from search results"""
-        self.click_timer = None
         if isinstance(path, tuple):
             path = path[0]
         if os.path.exists(path):
             path = os.path.normpath(path)
             if os.name == 'nt':
-                # Strip \\?\ prefix — Windows Explorer CLI rejects extended path prefixes
                 explorer_path = path.replace('\\\\?\\', '').replace('\\??\\', '')
                 subprocess.Popen(f'explorer /select,"{explorer_path}"')
             elif sys.platform == 'darwin':
                 subprocess.Popen(['open', '-R', path])
             else:
-                # Linux: try common file managers that support selecting/highlighting a file.
-                # Pass raw absolute path — do NOT URL-encode, Dolphin/Nautilus handle paths directly
                 import shutil as _shutil
                 folder = os.path.dirname(path)
                 _fm_select = [
-                    ('dolphin',  ['dolphin',  '--select', path]),  # KDE
-                    ('nautilus', ['nautilus', '--select', path]),  # GNOME
-                    ('nemo',     ['nemo',     path]),               # Linux Mint
-                    ('caja',     ['caja',     '--select', path]),  # MATE
-                    ('thunar',   ['thunar',   folder]),             # XFCE (no select)
-                    ('pcmanfm',  ['pcmanfm',  folder]),             # LXDE (no select)
+                    ('dolphin',  ['dolphin',  '--select', path]),
+                    ('nautilus', ['nautilus', '--select', path]),
+                    ('nemo',     ['nemo',     path]),
+                    ('caja',     ['caja',     '--select', path]),
+                    ('thunar',   ['thunar',   folder]),
+                    ('pcmanfm',  ['pcmanfm',  folder]),
                 ]
                 launched = False
                 for _name, _cmd in _fm_select:
@@ -3188,58 +3185,49 @@ class ImageSearchApp:
             except Exception as e:
                 safe_print(f"[OPEN] Failed to open viewer: {e}")
 
-    def clear_results(self, keep_results=False):
-        """Clear search results and free RAM from thumbnails"""
+    def _remove_cards_from_ui(self, abs_paths):
+        paths_set = set(abs_paths)
+        to_remove = [c for c in self._get_all_cards() if c._image_path in paths_set]
+        for card in to_remove:
+            self.scroll_area._grid.removeWidget(card)
+            card.deleteLater()
+            if card._image_path in self.thumbnail_images:
+                del self.thumbnail_images[card._image_path]
         
-        # Destroy all thumbnail widgets
-        for w in self.results_frame.winfo_children():
-            w.destroy()
-        
-        self.thumbnail_count = 0
-        self.show_more_frame.pack_forget()
-        
-        if not keep_results:
-            # Full clear — wipe thumbnail cache and all result state
-            # On pagination (keep_results=True) we keep cache so page turns
-            # don't re-decode every image from disk unnecessarily
-            self.thumbnail_images.clear()
-            self.all_search_results = []
-            self.show_more_offset = 0
-            self.total_found = 0
-            self.selected_images.clear()  # clear selections on new search, not on page turns
+        # Re-grid remaining after a brief delay to allow deleteLater to complete
+        QTimer.singleShot(50, lambda: self._reflow_grid())
 
-        # Force garbage collection to free RAM immediately
-        gc.collect()
-        
-        self.canvas.yview_moveto(0)
+    def _remove_paths_from_index(self, abs_paths):
+        if not self.folder:
+            return
+        rel_to_remove = set()
+        for p in abs_paths:
+            try:
+                rel_to_remove.add(os.path.relpath(p, self.folder).replace('\\', '/'))
+            except ValueError:
+                pass
 
+        if not rel_to_remove:
+            return
 
-    def _maybe_suggest_lower_score(self):
-        """Show a dismissable hint when search returns very few or no results"""
-        current_score = self.score_var.get()
-        if current_score > 0.05:
-            messagebox.showinfo(
-                "Few Results Found",
-                f"Only {self.total_found} result(s) found at similarity score {current_score:.2f}.\n\n"
-                f"Things to check:\n"
-                f"• Make sure the Image and/or Video filter buttons are enabled next to the Deselect All button\n"
-                f"• Try lowering the Similarity Score slider to find more matches\n"
-                f"  — Text search works well at 0.15–0.30\n"
-                f"  — Image search works well at 0.60–0.85"
-            )
+        keep_indices = [i for i, rp in enumerate(self.image_paths) if rp not in rel_to_remove]
+        self.image_paths = [self.image_paths[i] for i in keep_indices]
+        if self.image_embeddings is not None:
+            if keep_indices:
+                self.image_embeddings = self.image_embeddings[keep_indices]
+            else:
+                self.image_embeddings = None
+        self._save_cache(allow_shrink=True)
 
-    def _get_all_cards(self):
-        """Return all card frames currently displayed in results_frame"""
-        return [w for w in self.results_frame.winfo_children()
-                if isinstance(w, tk.Frame)]
+        if self.video_paths and rel_to_remove:
+            keep_video = [i for i, (vp, _) in enumerate(self.video_paths) if vp not in rel_to_remove]
+            if len(keep_video) < len(self.video_paths):
+                if self.video_embeddings is not None:
+                    self.video_embeddings = self.video_embeddings[keep_video] if keep_video else None
+                self.video_paths = [self.video_paths[i] for i in keep_video]
+                self._save_video_cache(allow_shrink=True)
 
-    def _clear_all_selections(self):
-        """Clear selected_images AND uncheck all card checkboxes visually."""
-        self.selected_images.clear()
-        for card in self._get_all_cards():
-            for child in card.winfo_children():
-                if isinstance(child, tk.Checkbutton) and hasattr(child, 'var'):
-                    child.var.set(False)
+        self.update_stats()
 
     def _select_card(self, card, select=True):
         """Programmatically select or deselect a card and update its checkbox"""
@@ -3250,324 +3238,16 @@ class ImageSearchApp:
             self.selected_images.add(path)
         else:
             self.selected_images.discard(path)
-        for child in card.winfo_children():
-            if isinstance(child, tk.Checkbutton):
-                try:
-                    if hasattr(child, 'var'):
-                        child.var.set(select)  # BooleanVar drives visual state
-                    elif select:
-                        child.select()
-                    else:
-                        child.deselect()
-                except Exception:
-                    pass
-                break
+        card.select_cb.setChecked(select)
 
-    def _setup_rubber_band(self):
-        """Windows-Explorer-style rubber-band selection.
-
-        Design:
-        - Press anywhere inside the canvas area → enters PENDING state
-        - Move >5px → enters ACTIVE state, draws selection rectangle
-        - Release with <5px total movement → normal click, card handlers fire untouched
-        - Release with >5px movement → selects all cards inside rectangle, cancels any click timer
-
-        Why bind_all for motion/release:
-        Tkinter's implicit pointer grab sends all B1-Motion and ButtonRelease-1 events to
-        whichever widget received the original ButtonPress-1, which is often a card's child
-        label or checkbox — not results_frame.  bind_all catches them globally; the
-        _rb_pending guard ensures we only act when we started from within the canvas area.
-
-        Why bind_all for press too:
-        results_frame.bind("<ButtonPress-1>") only fires when clicking on the frame's own
-        background pixels, not on child card widgets that cover it.  bind_all + canvas-
-        bounds check lets the drag start from anywhere inside the scrollable grid.
-
-        Overlay Toplevel:
-        Tkinter canvas create_rectangle items are always rendered BEHIND embedded create_window
-        widgets (the card frames), making the selection box invisible. Instead we use a
-        transparent Toplevel that floats above everything and is withdrawn on release.
-        """
-        self._rb_start_x = 0
-        self._rb_start_y = 0
-        self._rb_rect = None
-        self._rb_active = False   # True once mouse moved >5px — rectangle is visible
-        self._rb_pending = False  # True from press until release — waiting for 5px threshold
-
-        # --- Overlay Toplevel for visible rubber-band rectangle ---
-        # canvas.create_rectangle() is always hidden behind card widgets (Tkinter limitation)
-        # A transparent Toplevel placed over the canvas fixes this.
-        self._rb_overlay = None
-        self._rb_overlay_canvas = None
-        self._rb_overlay_rect = None
-        try:
-            overlay = tk.Toplevel(self.root)
-            overlay.overrideredirect(True)   # no title bar / borders
-            overlay.withdraw()               # hidden until drag starts
-            if os.name == 'nt':
-                # Windows: declare a near-black colour as transparent so the background
-                # disappears, leaving only the drawn rectangle visible
-                _TRANS = '#000002'
-                overlay.attributes('-transparentcolor', _TRANS)
-                ovcanvas = tk.Canvas(overlay, bg=_TRANS, highlightthickness=0)
-                ovcanvas.pack(fill='both', expand=True)
-                self._rb_overlay = overlay
-                self._rb_overlay_canvas = ovcanvas
-            else:
-                # Linux/macOS: the alpha overlay causes black canvas / compositor issues.
-                # Use the canvas fallback (rect drawn on main canvas) instead — less pretty
-                # but reliable on all compositors including KDE Wayland and X11.
-                overlay.destroy()
-                self._rb_overlay = None
-                self._rb_overlay_canvas = None
-        except Exception:
-            # If overlay creation fails for any reason, fall back to canvas drawing
-            self._rb_overlay = None
-            self._rb_overlay_canvas = None
-
-        # bind_all so events reach us regardless of which child widget has the pointer grab
-        self.root.bind_all("<ButtonPress-1>",   self._rb_on_press)
-        self.root.bind_all("<B1-Motion>",       self._rb_on_drag)
-        self.root.bind_all("<ButtonRelease-1>", self._rb_on_release)
-
-        # Right-click context menu on empty canvas background (unchanged)
-        self.canvas.bind("<ButtonPress-3>", self._show_canvas_context_menu)
-
-    def _rb_screen_to_canvas(self, x_root, y_root):
-        """Convert screen coordinates to canvas scroll-adjusted coordinates."""
-        local_x = x_root - self.canvas.winfo_rootx()
-        local_y = y_root - self.canvas.winfo_rooty()
-        return self.canvas.canvasx(local_x), self.canvas.canvasy(local_y)
-
-    def _rb_on_press(self, event):
-        """Start tracking a potential rubber-band drag.
-
-        Only activates if the press lands inside the canvas widget area
-        AND not on top of any card. Uses geometry check so it works
-        regardless of event propagation order on any platform.
-        """
-        # Check whether the click is within the canvas bounds
-        cx = self.canvas.winfo_rootx()
-        cy = self.canvas.winfo_rooty()
-        cw = self.canvas.winfo_width()
-        ch = self.canvas.winfo_height()
-        if not (cx <= event.x_root <= cx + cw and cy <= event.y_root <= cy + ch):
-            return  # Click is outside canvas area — ignore completely
-
-        # If click landed on any card, let the card handle it — don't start rubber band
+    def _clear_all_selections(self):
+        """Clear selected_images AND uncheck all card checkboxes visually."""
+        self.selected_images.clear()
         for card in self._get_all_cards():
-            try:
-                card_rx = card.winfo_rootx()
-                card_ry = card.winfo_rooty()
-                card_rw = card.winfo_width()
-                card_rh = card.winfo_height()
-                if (card_rx <= event.x_root <= card_rx + card_rw and
-                        card_ry <= event.y_root <= card_ry + card_rh):
-                    return  # Click is on a card — do not start rubber band
-            except Exception:
-                continue
-
-        self._rb_pending = True
-        self._rb_active = False
-        self._rb_start_x, self._rb_start_y = self._rb_screen_to_canvas(event.x_root, event.y_root)
-        if self._rb_rect:
-            self.canvas.delete(self._rb_rect)
-            self._rb_rect = None
-
-    def _rb_on_drag(self, event):
-        """Draw the selection rectangle once the drag threshold is crossed."""
-        if not self._rb_pending:
-            return
-
-        cx, cy = self._rb_screen_to_canvas(event.x_root, event.y_root)
-        dx = abs(cx - self._rb_start_x)
-        dy = abs(cy - self._rb_start_y)
-
-        # Only commit to rubber-band after 5px movement — below that it's still a click
-        if not self._rb_active:
-            if dx < 5 and dy < 5:
-                return
-            self._rb_active = True
-            # Cancel any card single-click timer so drag doesn't trigger open-in-explorer
-            if self.click_timer:
-                self.root.after_cancel(self.click_timer)
-                self.click_timer = None
-            # Show and position overlay ONCE when drag activates (not every motion event)
-            # Calling geometry() + deiconify() on every pixel of movement causes flickering
-            if self._rb_overlay and self._rb_overlay_canvas:
-                canvas_x = self.canvas.winfo_rootx()
-                canvas_y = self.canvas.winfo_rooty()
-                canvas_w = self.canvas.winfo_width()
-                canvas_h = self.canvas.winfo_height()
-                self._rb_overlay.geometry(f'{canvas_w}x{canvas_h}+{canvas_x}+{canvas_y}')
-                self._rb_overlay.deiconify()
-                self._rb_overlay.lift()
-
-        # Clean up old canvas rect if any (fallback path)
-        if self._rb_rect:
-            self.canvas.delete(self._rb_rect)
-            self._rb_rect = None
-
-        if self._rb_overlay and self._rb_overlay_canvas:
-            # --- Overlay path (Windows / most platforms) ---
-            # Only update the rectangle — overlay position was set when drag first activated
-
-            # Convert canvas-scroll coordinates to overlay-local pixel coordinates
-            # (overlay top-left = canvas widget's top-left on screen)
-            scroll_x0 = self.canvas.canvasx(0)
-            scroll_y0 = self.canvas.canvasy(0)
-            r_x1 = self._rb_start_x - scroll_x0
-            r_y1 = self._rb_start_y - scroll_y0
-            r_x2 = cx - scroll_x0
-            r_y2 = cy - scroll_y0
-
-            if self._rb_overlay_rect:
-                self._rb_overlay_canvas.delete(self._rb_overlay_rect)
-            self._rb_overlay_rect = self._rb_overlay_canvas.create_rectangle(
-                r_x1, r_y1, r_x2, r_y2,
-                outline="#4CAF50", fill="", width=2, dash=(4, 2)
-            )
-        else:
-            # --- Fallback: draw on main canvas (rect may be hidden behind cards) ---
-            if self._rb_rect:
-                self.canvas.delete(self._rb_rect)
-            # fill="" = transparent interior (Tkinter does not support 8-digit hex alpha colours)
-            self._rb_rect = self.canvas.create_rectangle(
-                self._rb_start_x, self._rb_start_y, cx, cy,
-                outline="#4CAF50", fill="", width=2, dash=(4, 2)
-            )
-
-    def _rb_on_release(self, event):
-        """On release: if rubber-band was active select cards; otherwise let normal click fire."""
-        if not self._rb_pending:
-            return
-
-        was_active = self._rb_active
-        self._rb_pending = False
-        self._rb_active = False
-
-        # Clean up canvas rect (fallback path)
-        if self._rb_rect:
-            self.canvas.delete(self._rb_rect)
-            self._rb_rect = None
-
-        # Clean up overlay rect and hide the Toplevel
-        if self._rb_overlay and self._rb_overlay_canvas:
-            if self._rb_overlay_rect:
-                self._rb_overlay_canvas.delete(self._rb_overlay_rect)
-                self._rb_overlay_rect = None
-            self._rb_overlay.withdraw()
-
-        if not was_active:
-            # Drag was under 5px — treat as a normal click, do not interfere
-            return
-
-        cx, cy = self._rb_screen_to_canvas(event.x_root, event.y_root)
-        x1 = min(self._rb_start_x, cx)
-        y1 = min(self._rb_start_y, cy)
-        x2 = max(self._rb_start_x, cx)
-        y2 = max(self._rb_start_y, cy)
-
-        if abs(x2 - x1) < 5 and abs(y2 - y1) < 5:
-            return
-
-        deselect_mode = bool(event.state & 0x4)  # Ctrl held = deselect mode
-
-        # results_frame origin in canvas-scroll coordinates
-        frame_canvas_x = (self.results_frame.winfo_rootx() - self.canvas.winfo_rootx()
-                          + self.canvas.canvasx(0))
-        frame_canvas_y = (self.results_frame.winfo_rooty() - self.canvas.winfo_rooty()
-                          + self.canvas.canvasy(0))
-
-        # Collect paths touched by the rubber band rect first, then call
-        # _set_card_selection_by_path for each — this ensures all frames from
-        # the same video get selected/deselected even if only one frame is inside
-        # the rect, matching the right-click context menu behaviour.
-        touched_paths = set()
-        for card in self._get_all_cards():
-            try:
-                card_x = card.winfo_x() + frame_canvas_x
-                card_y = card.winfo_y() + frame_canvas_y
-                card_w = card.winfo_width()
-                card_h = card.winfo_height()
-                if card_x < x2 and card_x + card_w > x1 and card_y < y2 and card_y + card_h > y1:
-                    p = getattr(card, '_image_path', None)
-                    if p:
-                        touched_paths.add(p)
-            except Exception:
-                pass
-
-        for p in touched_paths:
-            self._set_card_selection_by_path(p, select=not deselect_mode)
-
-    def _show_search_context_menu(self, event):
-        """Right-click context menu for the search bar — Cut, Copy, Paste, Delete"""
-        menu = tk.Menu(self.root, tearoff=0, bg=CARD_BG, fg=FG,
-                       activebackground=ACCENT, activeforeground="#ffffff",
-                       relief="flat", bd=1)
-        has_selection = bool(self.query_entry.selection_present())
-        has_text = bool(self.query_entry.get())
-        try:
-            clipboard_text = self.root.clipboard_get()
-            has_clipboard = bool(clipboard_text)
-        except Exception:
-            has_clipboard = False
-        menu.add_command(label="Cut",   command=lambda: self.query_entry.event_generate("<<Cut>>"),
-                         state="normal" if has_selection else "disabled")
-        menu.add_command(label="Copy",  command=lambda: self.query_entry.event_generate("<<Copy>>"),
-                         state="normal" if has_selection else "disabled")
-        menu.add_command(label="Paste", command=lambda: self.query_entry.event_generate("<<Paste>>"),
-                         state="normal" if has_clipboard else "disabled")
-        menu.add_separator()
-        menu.add_command(label="Select All", command=lambda: self.query_entry.select_range(0, "end"),
-                         state="normal" if has_text else "disabled")
-        menu.add_command(label="Delete",     command=lambda: self.query_entry.delete(0, "end"),
-                         state="normal" if has_text else "disabled")
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    def _show_canvas_context_menu(self, event):
-        """Right-click on canvas background — general context menu"""
-        menu = tk.Menu(self.root, tearoff=0, bg=CARD_BG, fg=FG,
-                       activebackground=ACCENT, activeforeground="#ffffff",
-                       relief="flat", bd=1)
-        menu.add_command(label="Select All", command=self._select_all_cards)
-        menu.add_command(label="Deselect All", command=self._deselect_all_cards)
-        menu.add_separator()
-        menu.add_command(label="Copy Selected", command=self.export_selected)
-        menu.add_command(label="Move Selected", command=self.move_selected)
-        menu.add_command(label="Delete Selected", command=self.delete_selected)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
-
-    def _show_card_context_menu(self, event, path):
-        """Right-click on a specific card"""
-        menu = tk.Menu(self.root, tearoff=0, bg=CARD_BG, fg=FG,
-                       activebackground=ACCENT, activeforeground="#ffffff",
-                       relief="flat", bd=1)
-        is_selected = path in self.selected_images
-        if is_selected:
-            menu.add_command(label="Deselect",
-                command=lambda: self._set_card_selection_by_path(path, False))
-        else:
-            menu.add_command(label="Select",
-                command=lambda: self._set_card_selection_by_path(path, True))
-        menu.add_separator()
-        menu.add_command(label="Copy", command=self.export_selected)
-        menu.add_command(label="Move", command=self.move_selected)
-        menu.add_command(label="Delete", command=self.delete_selected)
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+            card.select_cb.setChecked(False)
 
     def _set_card_selection_by_path(self, path, select):
-        """Select or deselect all cards matching path — no break so all video timestamp
-        thumbnails of the same file get their checkmark updated, not just the first one."""
+        """Select or deselect all cards matching path."""
         for card in self._get_all_cards():
             if getattr(card, '_image_path', None) == path:
                 self._select_card(card, select=select)
@@ -3586,14 +3266,44 @@ class ImageSearchApp:
         else: 
             self.selected_images.discard(path)
 
+    def _show_search_context_menu(self, pos):
+        """Right-click context menu for the search bar."""
+        menu = self.query_entry.createStandardContextMenu()
+        menu.exec(self.query_entry.mapToGlobal(pos))
+
+    def _show_canvas_context_menu(self, global_pos):
+        """Right-click on scroll area background — general context menu"""
+        menu = QMenu(self)
+        menu.addAction("Select All", self._select_all_cards)
+        menu.addAction("Deselect All", self._deselect_all_cards)
+        menu.addSeparator()
+        menu.addAction("Copy Selected", self.export_selected)
+        menu.addAction("Move Selected", self.move_selected)
+        menu.addAction("Delete Selected", self.delete_selected)
+        menu.exec(global_pos)
+
+    def _show_card_context_menu(self, global_pos, path):
+        """Right-click on a specific card"""
+        menu = QMenu(self)
+        is_selected = path in self.selected_images
+        if is_selected:
+            menu.addAction("Deselect", lambda: self._set_card_selection_by_path(path, False))
+        else:
+            menu.addAction("Select", lambda: self._set_card_selection_by_path(path, True))
+        menu.addSeparator()
+        menu.addAction("Copy", self.export_selected)
+        menu.addAction("Move", self.move_selected)
+        menu.addAction("Delete", self.delete_selected)
+        menu.exec(global_pos)
+
     def export_selected(self):
         if not self.selected_images:
-            messagebox.showinfo("Info", "No images selected")
+            QMessageBox.information(self, "Info", "No images selected")
             return
-        export_dir = filedialog.askdirectory(title="Export to")
+        export_dir = QFileDialog.getExistingDirectory(self, "Export to")
         if not export_dir: return
         copied = 0
-        skipped = 0   # destination file already exists
+        skipped = 0
         errors = []
         for path in self.selected_images:
             try:
@@ -3605,81 +3315,26 @@ class ImageSearchApp:
                 copied += 1
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
-        # Build a clear summary message
         lines = []
         if copied:
-            lines.append(f"✓  {copied} file(s) copied successfully")
+            lines.append(f"  {copied} file(s) copied successfully")
         if skipped:
-            lines.append(f"⚠  {skipped} file(s) skipped — already exist at destination")
+            lines.append(f"  {skipped} file(s) skipped - already exist at destination")
         if errors:
-            lines.append(f"✗  {len(errors)} file(s) failed:")
+            lines.append(f"  {len(errors)} file(s) failed:")
             lines.extend(f"    {e}" for e in errors[:5])
             if len(errors) > 5:
-                lines.append(f"    … and {len(errors) - 5} more")
-        messagebox.showinfo("Copy Complete", "\n".join(lines) if lines else "Nothing to copy.")
-        # Intentionally keep selection — user may want to copy to another location or delete next
-
-    def _remove_paths_from_index(self, abs_paths):
-        if not self.folder:
-            return
-        rel_to_remove = set()
-        for p in abs_paths:
-            try:
-                rel_to_remove.add(os.path.relpath(p, self.folder).replace('\\', '/'))
-            except ValueError:
-                pass  # different drive (Windows edge case)
-
-        if not rel_to_remove:
-            return
-
-        keep_indices = [i for i, rp in enumerate(self.image_paths) if rp not in rel_to_remove]
-        self.image_paths = [self.image_paths[i] for i in keep_indices]
-        if self.image_embeddings is not None:
-            if keep_indices:
-                self.image_embeddings = self.image_embeddings[keep_indices]
-            else:
-                self.image_embeddings = None
-        self._save_cache(allow_shrink=True)
-
-        # Also prune video frames for any deleted video files
-        if self.video_paths and rel_to_remove:
-            keep_video = [i for i, (vp, _) in enumerate(self.video_paths) if vp not in rel_to_remove]
-            if len(keep_video) < len(self.video_paths):
-                if self.video_embeddings is not None:
-                    self.video_embeddings = self.video_embeddings[keep_video] if keep_video else None
-                self.video_paths = [self.video_paths[i] for i in keep_video]
-                self._save_video_cache(allow_shrink=True)
-
-        self.update_stats()
-
-    def _remove_cards_from_ui(self, abs_paths):
-        paths_set = set(abs_paths)
-        cards_to_destroy = []
-        for card in list(self.results_frame.winfo_children()):
-            card_path = getattr(card, '_image_path', None)
-            if card_path in paths_set:
-                cards_to_destroy.append(card)
-                if card_path in self.thumbnail_images:
-                    del self.thumbnail_images[card_path]
-
-        for card in cards_to_destroy:
-            card.destroy()
-
-        # Re-grid remaining cards to fill gaps
-        cols = max(1, getattr(self, 'render_cols', 1))
-        for idx, card in enumerate(list(self.results_frame.winfo_children())):
-            row, col = divmod(idx, cols)
-            card.grid(row=row, column=col, padx=6, pady=6)
+                lines.append(f"    ... and {len(errors) - 5} more")
+        QMessageBox.information(self, "Copy Complete", "\n".join(lines) if lines else "Nothing to copy.")
 
     def move_selected(self):
         if not self.selected_images:
-            messagebox.showinfo("Info", "No images selected")
+            QMessageBox.information(self, "Info", "No images selected")
             return
-        dest_dir = filedialog.askdirectory(title="Move selected images to...")
+        dest_dir = QFileDialog.getExistingDirectory(self, "Move selected images to...")
         if not dest_dir:
             return
         moved = []
-        skipped_paths = []  # for UI removal: actually skipped means NOT moved
         skipped = 0
         errors = []
         for path in list(self.selected_images):
@@ -3697,35 +3352,33 @@ class ImageSearchApp:
         if moved:
             self._remove_cards_from_ui(moved)
             self._remove_paths_from_index(moved)
-            # Only deselect files that were actually moved — skipped/failed stay selected for retry
             for p in moved:
                 self.selected_images.discard(p)
-        # Build a clear summary message
         lines = []
         if moved:
-            lines.append(f"✓  {len(moved)} file(s) moved successfully")
+            lines.append(f"  {len(moved)} file(s) moved successfully")
         if skipped:
-            lines.append(f"⚠  {skipped} file(s) skipped — already exist at destination")
+            lines.append(f"  {skipped} file(s) skipped - already exist at destination")
         if errors:
-            lines.append(f"✗  {len(errors)} file(s) failed:")
+            lines.append(f"  {len(errors)} file(s) failed:")
             lines.extend(f"    {e}" for e in errors[:5])
             if len(errors) > 5:
-                lines.append(f"    … and {len(errors) - 5} more")
-        messagebox.showinfo("Move Complete", "\n".join(lines) if lines else "Nothing to move.")
+                lines.append(f"    ... and {len(errors) - 5} more")
+        QMessageBox.information(self, "Move Complete", "\n".join(lines) if lines else "Nothing to move.")
         self.update_status(f"Moved {len(moved)} images", "green")
 
     def delete_selected(self):
         if not self.selected_images:
-            messagebox.showinfo("Info", "No images selected")
+            QMessageBox.information(self, "Info", "No images selected")
             return
 
-        # Check send2trash BEFORE asking user — never fall back to permanent delete
         try:
             from send2trash import send2trash
         except ImportError:
-            messagebox.showerror(
+            QMessageBox.critical(
+                self,
                 "Missing Dependency",
-                "Cannot delete safely — 'send2trash' is not installed.\n\n"
+                "Cannot delete safely - 'send2trash' is not installed.\n\n"
                 "Files will NOT be deleted. Install it with:\n"
                 "    pip install send2trash\n\n"
                 "This ensures files go to the Recycle Bin and can be recovered."
@@ -3733,20 +3386,16 @@ class ImageSearchApp:
             return
 
         count = len(self.selected_images)
-        if not messagebox.askyesno(
-            "Confirm Delete",
-            f"Move {count} selected file(s) to the Recycle Bin?\nFiles can be restored from the Recycle Bin."
-        ):
+        if QMessageBox.question(self, "Confirm Delete",
+                f"Move {count} selected file(s) to the Recycle Bin?\nFiles can be restored from the Recycle Bin.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
 
         deleted = []
         errors = []
-        # On Linux, send2trash may copy files to trash if on different filesystem — can be slow
         if os.name != 'nt' and sys.platform != 'darwin':
             self.update_status("Moving to Trash... please wait", "orange")
-            self.root.update_idletasks()
         for path in list(self.selected_images):
-            # Normalize path — strip any \\?\ prefix, convert slashes, resolve to absolute
             clean_path = path.replace('\\\\?\\', '').replace('\\??\\', '')
             clean_path = os.path.normpath(os.path.abspath(clean_path))
             safe_print(f"[DELETE] Attempting: {repr(clean_path)}, exists={os.path.exists(clean_path)}")
@@ -3759,43 +3408,16 @@ class ImageSearchApp:
         if deleted:
             self._remove_cards_from_ui(deleted)
             self._remove_paths_from_index(deleted)
-            # Only deselect files that were actually deleted — failed ones stay selected for retry
             for p in deleted:
                 self.selected_images.discard(p)
 
-        # Separate success and error messages — never mix them in one dialog
         if deleted:
-            messagebox.showinfo("Moved to Recycle Bin",
+            QMessageBox.information(self, "Moved to Recycle Bin",
                 f"Successfully moved {len(deleted)} file(s) to the Recycle Bin.")
             self.update_status(f"Moved {len(deleted)} files to Recycle Bin", "green")
         if errors:
-            messagebox.showerror("Delete Errors",
+            QMessageBox.critical(self, "Delete Errors",
                 f"{len(errors)} file(s) could not be deleted:\n\n" + "\n".join(errors[:8]))
-
-    def update_status(self, text, color="blue"):
-        self.status_label.config(text=text, foreground=color)
-
-    def update_stats(self):
-        has_images = self.image_embeddings is not None and len(self.image_paths) > 0
-        has_videos = self.video_embeddings is not None and len(self.video_paths) > 0
-
-        if has_images and has_videos:
-            n_imgs = len(self.image_paths)
-            n_frames = len(self.video_paths)
-            n_vids = len(set(vp for vp, _ in self.video_paths))
-            self.stats_label.config(text=f"{n_imgs:,} images | {n_vids:,} videos ({n_frames:,} frames)")
-        elif has_images:
-            self.stats_label.config(text=f"{len(self.image_paths):,} images indexed")
-        elif has_videos:
-            n_frames = len(self.video_paths)
-            n_vids = len(set(vp for vp, _ in self.video_paths))
-            self.stats_label.config(text=f"{n_vids:,} videos ({n_frames:,} frames)")
-        else:
-            self.stats_label.config(text="")
-
-    def update_progress(self, value, text):
-        self.progress['value'] = value
-        self.progress_label.config(text=text)
 
     def show_index_info(self):
         folder_str = self.folder if self.folder else "No folder selected"
@@ -3849,9 +3471,10 @@ class ImageSearchApp:
             f"Pretrained:  {MODEL_PRETRAINED}\n\n"
             f"Exclusion Patterns:  {exclusions_str}"
         )
-        messagebox.showinfo("Index Info", info)
+        QMessageBox.information(self, "Index Info", info)
 
-    # ─── Feature 1: Search History & Saved Presets ────────────────────────────
+
+    # --- Feature 1: Search History & Saved Presets ---
 
     def get_history_filename(self):
         return ".clip_search_history.json"
@@ -3904,197 +3527,230 @@ class ImageSearchApp:
 
     def open_history_dialog(self):
         if not self.folder:
-            messagebox.showwarning("No Folder", "Please select a folder first.")
+            QMessageBox.warning(self, "No Folder", "Please select a folder first.")
             return
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Search History & Saved Presets")
-        dialog.geometry("520x500")
-        dialog.configure(bg=BG)
-        dialog.grab_set()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Search History & Saved Presets")
+        dlg.resize(520, 500)
+        layout = QVBoxLayout(dlg)
 
-        notebook = ttk.Notebook(dialog)
-        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        tabs = QTabWidget()
+        layout.addWidget(tabs, stretch=1)
 
-        # ── Recent Searches tab ──
-        history_frame = tk.Frame(notebook, bg=BG)
-        notebook.add(history_frame, text="Recent Searches")
-
-        tk.Label(history_frame,
-                 text="Recent searches — double-click to run, or select and click Use:",
-                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(6, 2))
-
-        h_list_frame = tk.Frame(history_frame, bg=BG)
-        h_list_frame.pack(fill="both", expand=True, padx=8, pady=4)
-
-        h_scroll = tk.Scrollbar(h_list_frame)
-        h_scroll.pack(side="right", fill="y")
-        h_listbox = tk.Listbox(h_list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
-                               font=("Segoe UI", 10), yscrollcommand=h_scroll.set,
-                               highlightthickness=0, relief="flat")
-        h_listbox.pack(side="left", fill="both", expand=True)
-        h_scroll.config(command=h_listbox.yview)
-
+        # --- Recent Searches tab ---
+        history_widget = QWidget()
+        h_layout = QVBoxLayout(history_widget)
+        h_layout.addWidget(QLabel("Recent searches - double-click to run, or select and click Use:"))
+        h_list = QListWidget()
         for item in self.search_history:
-            h_listbox.insert(tk.END, f"{item['timestamp']}   {item['query']}")
+            h_list.addItem(f"{item['timestamp']}   {item['query']}")
+        h_layout.addWidget(h_list, stretch=1)
 
         def use_history():
-            sel = h_listbox.curselection()
-            if not sel:
-                return
-            query = self.search_history[sel[0]]["query"]
-            self.query_entry.delete(0, tk.END)
-            self.query_entry.insert(0, query)
-            dialog.destroy()
+            row = h_list.currentRow()
+            if row < 0: return
+            query = self.search_history[row]["query"]
+            self.query_entry.setText(query)
+            dlg.accept()
             self.on_search_click()
 
         def star_history():
-            sel = h_listbox.curselection()
-            if not sel:
-                return
-            query = self.search_history[sel[0]]["query"]
+            row = h_list.currentRow()
+            if row < 0: return
+            query = self.search_history[row]["query"]
             if any(p["query"] == query for p in self.search_presets):
-                messagebox.showinfo("Already Saved", "This query is already in your presets.", parent=dialog)
+                QMessageBox.information(dlg, "Already Saved", "This query is already in your presets.")
                 return
-            name_dlg = tk.Toplevel(dialog)
-            name_dlg.title("Save Preset")
-            name_dlg.geometry("320x130")
-            name_dlg.configure(bg=BG)
-            name_dlg.grab_set()
-            tk.Label(name_dlg, text="Preset name:", bg=BG, fg=FG).pack(padx=12, pady=(14, 4), anchor="w")
-            name_entry = tk.Entry(name_dlg, bg=CARD_BG, fg=FG, insertbackground=FG,
-                                  font=("Segoe UI", 10), relief="flat",
-                                  highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
-            name_entry.insert(0, query)
-            name_entry.pack(fill="x", padx=12)
-            name_entry.select_range(0, "end")
-
-            def do_save():
-                name = name_entry.get().strip() or query
-                self.search_presets.append({"name": name, "query": query})
+            name, ok = QInputDialog.getText(dlg, "Save Preset", "Preset name:", text=query)
+            if ok and name.strip():
+                self.search_presets.append({"name": name.strip(), "query": query})
                 self.save_search_history()
-                name_dlg.destroy()
-                messagebox.showinfo("Saved", f"Saved preset: {name}", parent=dialog)
-
-            name_entry.bind("<Return>", lambda e: do_save())
-            ttk.Button(name_dlg, text="Save", command=do_save).pack(pady=8)
+                QMessageBox.information(dlg, "Saved", f"Saved preset: {name.strip()}")
 
         def clear_history():
-            if messagebox.askyesno("Clear History", "Clear all recent search history?", parent=dialog):
+            if QMessageBox.question(dlg, "Clear History", "Clear all recent search history?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                 self.search_history = []
                 self.save_search_history()
-                h_listbox.delete(0, tk.END)
+                h_list.clear()
 
-        h_btn_frame = tk.Frame(history_frame, bg=BG)
-        h_btn_frame.pack(fill="x", padx=8, pady=4)
-        ttk.Button(h_btn_frame, text="Use", command=use_history, width=10,
-                   style="Accent.TButton").pack(side="left", padx=4)
-        ttk.Button(h_btn_frame, text="★ Save as Preset", command=star_history, width=16).pack(side="left", padx=4)
-        ttk.Button(h_btn_frame, text="Clear History", command=clear_history, width=14,
-                   style="Danger.TButton").pack(side="right", padx=4)
+        h_list.itemDoubleClicked.connect(lambda item: use_history())
+        h_btn_row = QHBoxLayout()
+        use_btn = QPushButton("Use")
+        use_btn.setProperty("class", "accent")
+        use_btn.clicked.connect(use_history)
+        star_btn = QPushButton("Save as Preset")
+        star_btn.clicked.connect(star_history)
+        clear_btn = QPushButton("Clear History")
+        clear_btn.setProperty("class", "danger")
+        clear_btn.clicked.connect(clear_history)
+        h_btn_row.addWidget(use_btn)
+        h_btn_row.addWidget(star_btn)
+        h_btn_row.addStretch()
+        h_btn_row.addWidget(clear_btn)
+        h_layout.addLayout(h_btn_row)
+        tabs.addTab(history_widget, "Recent Searches")
 
-        h_listbox.bind("<Double-Button-1>", lambda e: use_history())
-
-        # ── Saved Presets tab ──
-        presets_frame = tk.Frame(notebook, bg=BG)
-        notebook.add(presets_frame, text="Saved Presets")
-
-        tk.Label(presets_frame, text="Saved preset searches — double-click to run:",
-                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=(6, 2))
-
-        p_list_frame = tk.Frame(presets_frame, bg=BG)
-        p_list_frame.pack(fill="both", expand=True, padx=8, pady=4)
-
-        p_scroll = tk.Scrollbar(p_list_frame)
-        p_scroll.pack(side="right", fill="y")
-        p_listbox = tk.Listbox(p_list_frame, bg=CARD_BG, fg=FG, selectbackground=ACCENT,
-                               font=("Segoe UI", 10), yscrollcommand=p_scroll.set,
-                               highlightthickness=0, relief="flat")
-        p_listbox.pack(side="left", fill="both", expand=True)
-        p_scroll.config(command=p_listbox.yview)
+        # --- Saved Presets tab ---
+        presets_widget = QWidget()
+        p_layout = QVBoxLayout(presets_widget)
+        p_layout.addWidget(QLabel("Saved preset searches - double-click to run:"))
+        p_list = QListWidget()
 
         def refresh_presets():
-            p_listbox.delete(0, tk.END)
+            p_list.clear()
             for p in self.search_presets:
-                label = f"★  {p['name']}" if p['name'] == p['query'] else f"★  {p['name']}   ({p['query']})"
-                p_listbox.insert(tk.END, label)
+                label = f"  {p['name']}" if p['name'] == p['query'] else f"  {p['name']}   ({p['query']})"
+                p_list.addItem(label)
 
         refresh_presets()
+        p_layout.addWidget(p_list, stretch=1)
 
         def use_preset():
-            sel = p_listbox.curselection()
-            if not sel:
-                return
-            query = self.search_presets[sel[0]]["query"]
-            self.query_entry.delete(0, tk.END)
-            self.query_entry.insert(0, query)
-            dialog.destroy()
+            row = p_list.currentRow()
+            if row < 0: return
+            query = self.search_presets[row]["query"]
+            self.query_entry.setText(query)
+            dlg.accept()
             self.on_search_click()
 
         def delete_preset():
-            sel = p_listbox.curselection()
-            if not sel:
-                return
-            del self.search_presets[sel[0]]
+            row = p_list.currentRow()
+            if row < 0: return
+            del self.search_presets[row]
             self.save_search_history()
             refresh_presets()
 
-        p_btn_frame = tk.Frame(presets_frame, bg=BG)
-        p_btn_frame.pack(fill="x", padx=8, pady=4)
-        ttk.Button(p_btn_frame, text="Use", command=use_preset, width=10,
-                   style="Accent.TButton").pack(side="left", padx=4)
-        ttk.Button(p_btn_frame, text="Delete", command=delete_preset, width=10,
-                   style="Danger.TButton").pack(side="left", padx=4)
+        p_list.itemDoubleClicked.connect(lambda item: use_preset())
+        p_btn_row = QHBoxLayout()
+        p_use_btn = QPushButton("Use")
+        p_use_btn.setProperty("class", "accent")
+        p_use_btn.clicked.connect(use_preset)
+        p_del_btn = QPushButton("Delete")
+        p_del_btn.setProperty("class", "danger")
+        p_del_btn.clicked.connect(delete_preset)
+        p_btn_row.addWidget(p_use_btn)
+        p_btn_row.addWidget(p_del_btn)
+        p_btn_row.addStretch()
+        p_layout.addLayout(p_btn_row)
+        tabs.addTab(presets_widget, "Saved Presets")
 
-        p_listbox.bind("<Double-Button-1>", lambda e: use_preset())
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        dlg.exec()
 
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=(0, 8))
+    def open_exclusions_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Folder Exclusions")
+        dlg.resize(480, 380)
+        layout = QVBoxLayout(dlg)
 
-    # ─── Feature 2: Duplicate & Near-Duplicate Finder ─────────────────────────
+        info = QLabel("Exclude images whose path contains any pattern below.\n"
+                      "Case-sensitive substring match (e.g. 'nsfw', 'temp', 'backup').\n"
+                      "Use forward slashes for folder separators (e.g. 'raw/originals').")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        listbox = QListWidget()
+        for pattern in sorted(self.excluded_folders):
+            listbox.addItem(pattern)
+        layout.addWidget(listbox, stretch=1)
+
+        entry_row = QHBoxLayout()
+        entry = QLineEdit()
+        entry_row.addWidget(entry)
+
+        def add_pattern():
+            pat = entry.text().strip()
+            if not pat or pat in self.excluded_folders:
+                return
+            self.excluded_folders.add(pat)
+            listbox.addItem(pat)
+            self.save_exclusions()
+            entry.clear()
+
+        def remove_pattern():
+            row = listbox.currentRow()
+            if row < 0: return
+            pat = listbox.item(row).text()
+            self.excluded_folders.discard(pat)
+            listbox.takeItem(row)
+            self.save_exclusions()
+
+        entry.returnPressed.connect(add_pattern)
+        add_btn = QPushButton("Add")
+        add_btn.clicked.connect(add_pattern)
+        entry_row.addWidget(add_btn)
+        layout.addLayout(entry_row)
+
+        btn_row = QHBoxLayout()
+        rem_btn = QPushButton("Remove Selected")
+        rem_btn.setProperty("class", "danger")
+        rem_btn.clicked.connect(remove_pattern)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(rem_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        note = QLabel("Note: Run Refresh after changing exclusions to apply them to the index.")
+        note.setStyleSheet(f"color: {ORANGE}; font-style: italic; font-size: 8pt;")
+        layout.addWidget(note)
+
+        dlg.exec()
+
+    # --- Feature 2: Duplicate & Near-Duplicate Finder ---
 
     def on_find_duplicates(self):
         if self.image_embeddings is None or len(self.image_paths) < 2:
-            messagebox.showwarning("Not Ready", "Please index images first (at least 2 images required).")
+            QMessageBox.warning(self, "Not Ready", "Please index images first (at least 2 images required).")
             return
         if self.is_indexing:
-            messagebox.showwarning("Busy", "Please wait for indexing to complete.")
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
             return
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Find Duplicates")
-        dialog.geometry("420x200")
-        dialog.configure(bg=BG)
-        dialog.resizable(False, False)
-        dialog.grab_set()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Find Duplicates")
+        dlg.resize(420, 200)
+        dlg.setFixedSize(420, 200)
+        layout = QVBoxLayout(dlg)
 
-        tk.Label(dialog, text="Similarity threshold for duplicate detection:",
-                 bg=BG, fg=FG, font=("Segoe UI", 10)).pack(padx=16, pady=(16, 4))
-        tk.Label(dialog,
-                 text="0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar",
-                 bg=BG, fg="#888888", font=("Segoe UI", 8)).pack(padx=16, pady=(0, 8))
+        layout.addWidget(QLabel("Similarity threshold for duplicate detection:"))
+        layout.addWidget(QLabel("0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar"))
 
-        threshold_var = tk.DoubleVar(value=0.97)
-        tk.Scale(dialog, from_=0.80, to=0.999, resolution=0.001, orient="horizontal",
-                 variable=threshold_var, length=320, bg=PANEL_BG, fg=FG,
-                 troughcolor=BORDER, highlightthickness=0).pack(padx=16)
+        thresh_slider = QSlider(Qt.Orientation.Horizontal)
+        thresh_slider.setRange(800, 999)
+        thresh_slider.setValue(970)
+        thresh_label = QLabel("0.970")
+        thresh_slider.valueChanged.connect(lambda v: thresh_label.setText(f"{v/1000.0:.3f}"))
+        row = QHBoxLayout()
+        row.addWidget(thresh_slider)
+        row.addWidget(thresh_label)
+        layout.addLayout(row)
 
         n_images = len(self.image_paths)
-        tk.Label(dialog, text=f"{n_images:,} images in index",
-                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(pady=4)
+        layout.addWidget(QLabel(f"{n_images:,} images in index"))
 
         def start_scan():
-            threshold = threshold_var.get()
-            dialog.destroy()
+            threshold = thresh_slider.value() / 1000.0
+            dlg.accept()
             self.update_status(f"Scanning for duplicates (threshold={threshold:.3f})...", "orange")
-            self.progress.config(mode='indeterminate')
-            self.progress.start()
+            self.progress.setRange(0, 0)
             Thread(target=lambda: self._find_duplicates_worker(threshold), daemon=True).start()
 
-        btn_frame = tk.Frame(dialog, bg=BG)
-        btn_frame.pack(pady=8)
-        ttk.Button(btn_frame, text="Find Duplicates", command=start_scan,
-                   style="Accent.TButton", width=16).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side="left", padx=4)
+        btn_frame = QHBoxLayout()
+        scan_btn = QPushButton("Find Duplicates")
+        scan_btn.setProperty("class", "accent")
+        scan_btn.clicked.connect(start_scan)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_frame.addWidget(scan_btn)
+        btn_frame.addWidget(cancel_btn)
+        layout.addLayout(btn_frame)
+        dlg.exec()
 
     def _find_duplicates_worker(self, threshold):
         """Find near-duplicate image groups using embedding cosine similarity."""
@@ -4103,7 +3759,6 @@ class ImageSearchApp:
             n = len(self.image_paths)
             safe_print(f"[DUPES] Scanning {n:,} images, threshold={threshold:.3f}...")
 
-            # Union-Find for grouping
             parent = list(range(n))
 
             def find(x):
@@ -4124,8 +3779,8 @@ class ImageSearchApp:
             for chunk_idx in range(total_chunks):
                 start = chunk_idx * chunk_size
                 end = min(start + chunk_size, n)
-                chunk = embeddings[start:end]       # (K, D)
-                sims = chunk @ embeddings.T         # (K, N)
+                chunk = embeddings[start:end]
+                sims = chunk @ embeddings.T
 
                 rows, cols = np.where(sims >= threshold)
                 for r, c in zip(rows.tolist(), cols.tolist()):
@@ -4135,10 +3790,9 @@ class ImageSearchApp:
                         pair_count += 1
 
                 pct = int((chunk_idx + 1) / total_chunks * 100)
-                self._safe_after(0, lambda p=pct: self.progress_label.config(
-                    text=f"Scanning for duplicates... {p}%"))
+                self._safe_after(0, lambda p=pct: self.progress_label.setText(
+                    f"Scanning for duplicates... {p}%"))
 
-            # Collect groups
             groups = {}
             for i in range(n):
                 root = find(i)
@@ -4149,13 +3803,14 @@ class ImageSearchApp:
 
             safe_print(f"[DUPES] Found {len(dup_groups)} groups ({pair_count} pairs)")
 
-            self._safe_after(0, lambda: self.progress.stop())
-            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
-            self._safe_after(0, lambda: self.progress_label.config(text=""))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
 
             if not dup_groups:
                 self._safe_after(0, lambda: self.update_status("No duplicates found", "green"))
-                self._safe_after(0, lambda: messagebox.showinfo(
+                self._safe_after(0, lambda: QMessageBox.information(
+                    self,
                     "No Duplicates",
                     f"No duplicate images found at threshold {threshold:.3f}.\n\n"
                     f"Try lowering the threshold to find more similar images."))
@@ -4169,83 +3824,68 @@ class ImageSearchApp:
         except Exception as e:
             safe_print(f"[DUPES] Error: {e}")
             import traceback; traceback.print_exc()
-            self._safe_after(0, lambda: self.progress.stop())
-            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.update_status("Duplicate scan failed", "red"))
 
     def open_duplicates_dialog(self, dup_groups):
         """Display duplicate groups with checkboxes for selective deletion."""
-        dialog = tk.Toplevel(self.root)
+        dlg = QDialog(self)
         total_redundant = sum(len(g) - 1 for g in dup_groups)
-        dialog.title(f"Duplicate Finder — {len(dup_groups)} groups, {total_redundant} redundant files")
-        dialog.geometry("920x660")
-        dialog.configure(bg=BG)
+        dlg.setWindowTitle(f"Duplicate Finder - {len(dup_groups)} groups, {total_redundant} redundant files")
+        dlg.resize(920, 660)
+        layout = QVBoxLayout(dlg)
 
         # Header
-        hdr = tk.Frame(dialog, bg=PANEL_BG)
-        hdr.pack(fill="x", padx=8, pady=6)
-        tk.Label(hdr,
-                 text=f"{len(dup_groups)} duplicate groups   •   {total_redundant} potentially redundant files",
-                 bg=PANEL_BG, fg=FG, font=("Segoe UI", 10, "bold")).pack(side="left", padx=8)
-        tk.Label(hdr, text="Checked items will be deleted. First image in each group is kept by default.",
-                 bg=PANEL_BG, fg="#888888", font=("Segoe UI", 9)).pack(side="left", padx=8)
+        hdr_lbl = QLabel(f"{len(dup_groups)} duplicate groups   -   {total_redundant} potentially redundant files")
+        hdr_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold;")
+        layout.addWidget(hdr_lbl)
+        layout.addWidget(QLabel("Checked items will be deleted. First image in each group is kept by default."))
 
         # Scrollable area
-        container = tk.Frame(dialog, bg=BG)
-        container.pack(fill="both", expand=True, padx=8, pady=4)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner_widget = QWidget()
+        inner_layout = QVBoxLayout(inner_widget)
+        scroll.setWidget(inner_widget)
+        layout.addWidget(scroll, stretch=1)
 
-        dup_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        dup_scroll = ttk.Scrollbar(container, orient="vertical", command=dup_canvas.yview)
-        inner = tk.Frame(dup_canvas, bg=BG)
-        canvas_win = dup_canvas.create_window((0, 0), window=inner, anchor="nw")
-        dup_canvas.configure(yscrollcommand=dup_scroll.set)
-        dup_canvas.pack(side="left", fill="both", expand=True)
-        dup_scroll.pack(side="right", fill="y")
-
-        inner.bind("<Configure>", lambda e: dup_canvas.configure(scrollregion=dup_canvas.bbox("all")))
-        dup_canvas.bind("<Configure>", lambda e: dup_canvas.itemconfig(canvas_win, width=e.width))
-
-        def _dup_scroll(e):
-            try:
-                dup_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-            except Exception:
-                pass
-        dup_canvas.bind_all("<MouseWheel>", _dup_scroll)
-
-        delete_vars = {}     # abs_path -> BooleanVar
-        dialog_photos = {}   # keep ImageTk refs alive — attached to dialog below
-        dialog.photos = dialog_photos  # prevent GC after function returns
-
+        delete_vars = {}  # abs_path -> QCheckBox
         THUMB_W, THUMB_H = 150, 150
 
         for grp_idx, group in enumerate(dup_groups):
-            grp_frame = tk.Frame(inner, bg=CARD_BG, bd=1, relief="solid")
-            grp_frame.pack(fill="x", padx=6, pady=4)
+            grp_frame = QFrame()
+            grp_frame.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+            grp_layout = QVBoxLayout(grp_frame)
 
-            grp_hdr = tk.Frame(grp_frame, bg=PANEL_BG)
-            grp_hdr.pack(fill="x")
-            tk.Label(grp_hdr,
-                     text=f"Group {grp_idx + 1}  —  {len(group)} similar images",
-                     bg=PANEL_BG, fg=FG, font=("Segoe UI", 9, "bold")).pack(side="left", padx=8, pady=3)
+            grp_hdr = QHBoxLayout()
+            grp_hdr_lbl = QLabel(f"Group {grp_idx + 1}  -  {len(group)} similar images")
+            grp_hdr_lbl.setStyleSheet("font-weight: bold;")
+            grp_hdr.addWidget(grp_hdr_lbl)
+            grp_hdr.addStretch()
 
             def _mark_group(g=group):
                 for k, i in enumerate(g):
                     ap = os.path.join(self.folder, self.image_paths[i])
                     if ap in delete_vars:
-                        delete_vars[ap].set(k > 0)
+                        delete_vars[ap].setChecked(k > 0)
 
-            ttk.Button(grp_hdr, text="Keep First, Delete Rest",
-                       command=_mark_group, width=22).pack(side="right", padx=4, pady=2)
+            keep_btn = QPushButton("Keep First, Delete Rest")
+            keep_btn.clicked.connect(_mark_group)
+            grp_hdr.addWidget(keep_btn)
+            grp_layout.addLayout(grp_hdr)
 
-            thumbs_row = tk.Frame(grp_frame, bg=CARD_BG)
-            thumbs_row.pack(fill="x", padx=4, pady=4)
+            thumbs_row_widget = QWidget()
+            thumbs_row_layout = QHBoxLayout(thumbs_row_widget)
+            thumbs_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
             for k, img_idx in enumerate(group):
                 rel_path = self.image_paths[img_idx]
                 abs_path = os.path.join(self.folder, rel_path)
 
-                cell = tk.Frame(thumbs_row, bg=CARD_BG)
-                cell.pack(side="left", padx=6)
+                cell = QWidget()
+                cell_layout = QVBoxLayout(cell)
+                cell_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
                 try:
                     if rel_path.lower().endswith(RAW_EXTS):
@@ -4258,62 +3898,72 @@ class ImageSearchApp:
                         img = Image.open(safe_p)
                         img.load()
                     img.thumbnail((THUMB_W, THUMB_H))
-                    photo = ImageTk.PhotoImage(img)
-                    dialog_photos[abs_path] = photo
-                    tk.Label(cell, image=photo, bg=CARD_BG).pack()
+                    pixmap = pil_to_pixmap(img)
+                    img_lbl = QLabel()
+                    img_lbl.setPixmap(pixmap)
+                    img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    cell_layout.addWidget(img_lbl)
                 except Exception:
-                    tk.Label(cell, text="[no preview]", bg=CARD_BG, fg=FG,
-                             width=16, height=7).pack()
+                    no_prev = QLabel("[no preview]")
+                    no_prev.setFixedSize(150, 100)
+                    cell_layout.addWidget(no_prev)
 
                 name = os.path.basename(rel_path)
                 if len(name) > 22:
                     name = name[:19] + "..."
-                tk.Label(cell, text=name, bg=CARD_BG, fg=FG,
-                         font=("Segoe UI", 8), wraplength=150).pack()
+                name_lbl = QLabel(name)
+                name_lbl.setWordWrap(True)
+                name_lbl.setStyleSheet("font-size: 8pt;")
+                cell_layout.addWidget(name_lbl)
 
                 try:
                     fsize = os.path.getsize(abs_path)
                     size_str = f"{fsize/1024:.0f} KB" if fsize < 1024*1024 else f"{fsize/1024/1024:.1f} MB"
-                    tk.Label(cell, text=size_str, bg=CARD_BG, fg="#888888",
-                             font=("Segoe UI", 8)).pack()
+                    size_lbl = QLabel(size_str)
+                    size_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
+                    cell_layout.addWidget(size_lbl)
                 except Exception:
                     pass
 
-                var = tk.BooleanVar(value=(k > 0))
-                delete_vars[abs_path] = var
-                tk.Checkbutton(cell, text="Delete", variable=var,
-                               bg=CARD_BG, fg=DANGER, selectcolor=BG,
-                               activebackground=CARD_BG, font=("Segoe UI", 8)).pack()
+                del_cb = QCheckBox("Delete")
+                del_cb.setChecked(k > 0)
+                del_cb.setStyleSheet(f"color: {DANGER};")
+                delete_vars[abs_path] = del_cb
+                cell_layout.addWidget(del_cb)
+
+                thumbs_row_layout.addWidget(cell)
+
+            grp_layout.addWidget(thumbs_row_widget)
+            inner_layout.addWidget(grp_frame)
+
+        inner_layout.addStretch()
 
         # Bottom bar
-        bottom = tk.Frame(dialog, bg=PANEL_BG)
-        bottom.pack(fill="x", padx=8, pady=6)
+        count_label = QLabel("")
+        layout.addWidget(count_label)
 
-        count_label = tk.Label(bottom, text="", bg=PANEL_BG, fg=FG, font=("Segoe UI", 9))
-        count_label.pack(side="left", padx=8)
+        def _update_count():
+            n = sum(1 for cb in delete_vars.values() if cb.isChecked())
+            count_label.setText(f"{n} file(s) checked for deletion")
 
-        def _update_count(*_):
-            n = sum(1 for v in delete_vars.values() if v.get())
-            count_label.config(text=f"{n} file(s) checked for deletion")
-
-        for v in delete_vars.values():
-            v.trace_add("write", _update_count)
+        for cb in delete_vars.values():
+            cb.stateChanged.connect(lambda _: _update_count())
         _update_count()
 
         def delete_checked():
-            to_del = [p for p, v in delete_vars.items() if v.get() and os.path.exists(p)]
+            to_del = [p for p, cb in delete_vars.items() if cb.isChecked() and os.path.exists(p)]
             if not to_del:
-                messagebox.showinfo("Nothing to Delete", "No files are checked for deletion.", parent=dialog)
+                QMessageBox.information(dlg, "Nothing to Delete", "No files are checked for deletion.")
                 return
-            if not messagebox.askyesno("Confirm Delete",
-                    f"Move {len(to_del)} file(s) to the Recycle Bin?\n\n"
-                    f"Files can be restored from the Recycle Bin.", parent=dialog):
+            if QMessageBox.question(dlg, "Confirm Delete",
+                    f"Move {len(to_del)} file(s) to the Recycle Bin?\n\nFiles can be restored from the Recycle Bin.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
                 return
             try:
                 from send2trash import send2trash
             except ImportError:
-                messagebox.showerror("Missing Dependency",
-                    "send2trash is not installed.\npip install send2trash", parent=dialog)
+                QMessageBox.critical(dlg, "Missing Dependency",
+                    "send2trash is not installed.\npip install send2trash")
                 return
             deleted, errors = [], []
             for p in to_del:
@@ -4329,24 +3979,25 @@ class ImageSearchApp:
                     delete_vars.pop(p, None)
                 _update_count()
             if errors:
-                messagebox.showerror("Errors", "\n".join(errors[:5]), parent=dialog)
+                QMessageBox.critical(dlg, "Errors", "\n".join(errors[:5]))
             if deleted:
-                messagebox.showinfo("Done",
-                    f"Moved {len(deleted)} file(s) to Recycle Bin.", parent=dialog)
+                QMessageBox.information(dlg, "Done",
+                    f"Moved {len(deleted)} file(s) to Recycle Bin.")
 
-        ttk.Button(bottom, text="Delete Checked Files", command=delete_checked,
-                   style="Danger.TButton", width=20).pack(side="right", padx=8, pady=4)
-        ttk.Button(bottom, text="Close", command=dialog.destroy, width=10).pack(side="right", padx=4, pady=4)
+        bottom_row = QHBoxLayout()
+        del_btn = QPushButton("Delete Checked Files")
+        del_btn.setProperty("class", "danger")
+        del_btn.clicked.connect(delete_checked)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        bottom_row.addWidget(del_btn)
+        bottom_row.addStretch()
+        bottom_row.addWidget(close_btn)
+        layout.addLayout(bottom_row)
+        dlg.exec()
 
-        def _on_dup_close():
-            try:
-                dup_canvas.unbind_all("<MouseWheel>")
-            except Exception:
-                pass
-            dialog.destroy()
-        dialog.protocol("WM_DELETE_WINDOW", _on_dup_close)
 
-    # ─── Feature 3: Smart Albums (Auto-Collections via Clustering) ─────────────
+    # --- Feature 3: Smart Albums (Auto-Collections via Clustering) ---
 
     def _kmeans_numpy(self, embeddings, n_clusters, max_iter=30):
         """K-Means clustering on L2-normalized embeddings (cosine similarity)."""
@@ -4360,7 +4011,7 @@ class ImageSearchApp:
         labels = np.zeros(n, dtype=np.int32)
 
         for iteration in range(max_iter):
-            sims = embeddings @ centroids.T          # (N, K)
+            sims = embeddings @ centroids.T
             new_labels = np.argmax(sims, axis=1).astype(np.int32)
             if np.array_equal(new_labels, labels) and iteration > 0:
                 break
@@ -4380,51 +4031,53 @@ class ImageSearchApp:
 
     def on_smart_albums(self):
         if self.image_embeddings is None or len(self.image_paths) < 2:
-            messagebox.showwarning("Not Ready", "Please index images first.")
+            QMessageBox.warning(self, "Not Ready", "Please index images first.")
             return
         if self.is_indexing:
-            messagebox.showwarning("Busy", "Please wait for indexing to complete.")
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
             return
 
         n_images = len(self.image_paths)
         default_clusters = min(15, max(3, n_images // 100))
 
-        dialog = tk.Toplevel(self.root)
-        dialog.title("Smart Albums — Auto-Collections")
-        dialog.geometry("400x230")
-        dialog.configure(bg=BG)
-        dialog.resizable(False, False)
-        dialog.grab_set()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Smart Albums - Auto-Collections")
+        dlg.resize(400, 230)
+        dlg.setFixedSize(400, 230)
+        layout = QVBoxLayout(dlg)
 
-        tk.Label(dialog,
-                 text="Automatically group your images into thematic albums\nusing AI clustering on their visual embeddings.",
-                 bg=BG, fg=FG, font=("Segoe UI", 10), justify="center").pack(padx=16, pady=(16, 8))
+        lbl = QLabel("Automatically group your images into thematic albums\nusing AI clustering on their visual embeddings.")
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(lbl)
 
-        spin_frame = tk.Frame(dialog, bg=BG)
-        spin_frame.pack()
-        tk.Label(spin_frame, text="Number of albums:", bg=BG, fg=FG,
-                 font=("Segoe UI", 10)).pack(side="left", padx=4)
-        n_clusters_var = tk.IntVar(value=default_clusters)
-        tk.Spinbox(spin_frame, from_=2, to=50, textvariable=n_clusters_var,
-                   width=6, bg=CARD_BG, fg=FG, insertbackground=FG,
-                   buttonbackground=PANEL_BG).pack(side="left", padx=4)
+        spin_row = QHBoxLayout()
+        spin_row.addWidget(QLabel("Number of albums:"))
+        n_clusters_spin = QSpinBox()
+        n_clusters_spin.setRange(2, 50)
+        n_clusters_spin.setValue(default_clusters)
+        spin_row.addWidget(n_clusters_spin)
+        spin_row.addStretch()
+        layout.addLayout(spin_row)
 
-        tk.Label(dialog, text=f"{n_images:,} images will be clustered",
-                 bg=BG, fg=FG, font=("Segoe UI", 9)).pack(pady=6)
+        layout.addWidget(QLabel(f"{n_images:,} images will be clustered"))
 
         def start_clustering():
-            n_clusters = n_clusters_var.get()
-            dialog.destroy()
+            n_clusters = n_clusters_spin.value()
+            dlg.accept()
             self.update_status(f"Building {n_clusters} smart albums...", "orange")
-            self.progress.config(mode='indeterminate')
-            self.progress.start()
+            self.progress.setRange(0, 0)
             Thread(target=lambda: self._smart_albums_worker(n_clusters), daemon=True).start()
 
-        btn_frame = tk.Frame(dialog, bg=BG)
-        btn_frame.pack(pady=4)
-        ttk.Button(btn_frame, text="Build Smart Albums", command=start_clustering,
-                   style="Accent.TButton", width=18).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side="left", padx=4)
+        btn_row = QHBoxLayout()
+        build_btn = QPushButton("Build Smart Albums")
+        build_btn.setProperty("class", "accent")
+        build_btn.clicked.connect(start_clustering)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(build_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+        dlg.exec()
 
     def _smart_albums_worker(self, n_clusters):
         """Cluster images into smart albums using K-Means."""
@@ -4432,7 +4085,7 @@ class ImageSearchApp:
             embeddings = self.image_embeddings
             n = len(self.image_paths)
             safe_print(f"[ALBUMS] Clustering {n:,} images into {n_clusters} albums...")
-            self._safe_after(0, lambda: self.progress_label.config(text="Running K-Means clustering..."))
+            self._safe_after(0, lambda: self.progress_label.setText("Running K-Means clustering..."))
 
             try:
                 from sklearn.cluster import KMeans
@@ -4465,9 +4118,9 @@ class ImageSearchApp:
             cluster_info.sort(key=lambda x: x["size"], reverse=True)
             safe_print(f"[ALBUMS] Built {len(cluster_info)} albums")
 
-            self._safe_after(0, lambda: self.progress.stop())
-            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
-            self._safe_after(0, lambda: self.progress_label.config(text=""))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
             self._safe_after(0, lambda: self.update_status(
                 f"Smart Albums ready: {len(cluster_info)} albums", "green"))
             self._safe_after(0, lambda: self.open_smart_albums_dialog(cluster_info))
@@ -4475,45 +4128,30 @@ class ImageSearchApp:
         except Exception as e:
             safe_print(f"[ALBUMS] Error: {e}")
             import traceback; traceback.print_exc()
-            self._safe_after(0, lambda: self.progress.stop())
-            self._safe_after(0, lambda: self.progress.config(mode='determinate', value=0))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.update_status("Smart Albums failed", "red"))
 
     def open_smart_albums_dialog(self, cluster_info):
         """Display smart albums as a grid of representative thumbnails."""
-        dialog = tk.Toplevel(self.root)
-        dialog.title(f"Smart Albums — {len(cluster_info)} Auto-Collections")
-        dialog.geometry("920x660")
-        dialog.configure(bg=BG)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Smart Albums - {len(cluster_info)} Auto-Collections")
+        dlg.resize(920, 660)
+        layout = QVBoxLayout(dlg)
 
-        tk.Label(dialog,
-                 text="AI-generated collections based on visual similarity. Click 'View Album' to browse a collection.",
-                 bg=PANEL_BG, fg=FG, font=("Segoe UI", 9), padx=8, pady=5).pack(fill="x")
+        info_lbl = QLabel("AI-generated collections based on visual similarity. Click 'View Album' to browse a collection.")
+        info_lbl.setStyleSheet(f"background-color: {PANEL_BG}; padding: 5px;")
+        layout.addWidget(info_lbl)
 
-        container = tk.Frame(dialog, bg=BG)
-        container.pack(fill="both", expand=True, padx=8, pady=4)
-
-        alb_canvas = tk.Canvas(container, bg=BG, highlightthickness=0)
-        alb_scroll = ttk.Scrollbar(container, orient="vertical", command=alb_canvas.yview)
-        grid_frame = tk.Frame(alb_canvas, bg=BG)
-        canvas_win = alb_canvas.create_window((0, 0), window=grid_frame, anchor="nw")
-        alb_canvas.configure(yscrollcommand=alb_scroll.set)
-        alb_canvas.pack(side="left", fill="both", expand=True)
-        alb_scroll.pack(side="right", fill="y")
-
-        grid_frame.bind("<Configure>", lambda e: alb_canvas.configure(scrollregion=alb_canvas.bbox("all")))
-        alb_canvas.bind("<Configure>", lambda e: alb_canvas.itemconfig(canvas_win, width=e.width))
-
-        def _alb_scroll(e):
-            try:
-                alb_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-            except Exception:
-                pass
-        alb_canvas.bind_all("<MouseWheel>", _alb_scroll)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        grid_widget = QWidget()
+        grid_layout = QGridLayout(grid_widget)
+        grid_layout.setSpacing(8)
+        scroll.setWidget(grid_widget)
+        layout.addWidget(scroll, stretch=1)
 
         ALBUM_THUMB = (160, 160)
-        album_photos = {}   # keep ImageTk refs alive — attached to dialog below
-        dialog.photos = album_photos  # prevent GC after function returns
         COLS = 4
 
         for idx, info in enumerate(cluster_info):
@@ -4522,8 +4160,10 @@ class ImageSearchApp:
             abs_path = os.path.join(self.folder, rel_path)
             row, col = divmod(idx, COLS)
 
-            card = tk.Frame(grid_frame, bg=CARD_BG, bd=1, relief="solid")
-            card.grid(row=row, column=col, padx=6, pady=6)
+            card = QFrame()
+            card.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+            card_layout = QVBoxLayout(card)
+            card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
             try:
                 if rel_path.lower().endswith(RAW_EXTS):
@@ -4536,20 +4176,26 @@ class ImageSearchApp:
                     img = Image.open(safe_p)
                     img.load()
                 img.thumbnail(ALBUM_THUMB)
-                photo = ImageTk.PhotoImage(img)
-                album_photos[idx] = photo
-                tk.Label(card, image=photo, bg=CARD_BG).pack(pady=4)
+                pixmap = pil_to_pixmap(img)
+                img_lbl = QLabel()
+                img_lbl.setPixmap(pixmap)
+                img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                card_layout.addWidget(img_lbl)
             except Exception:
-                tk.Label(card, text="[preview unavailable]", bg=CARD_BG, fg=FG,
-                         width=20, height=8).pack(pady=4)
+                no_prev = QLabel("[preview unavailable]")
+                no_prev.setFixedSize(160, 80)
+                card_layout.addWidget(no_prev)
 
-            tk.Label(card, text=f"Album {idx + 1}", bg=CARD_BG, fg=ACCENT_SECONDARY,
-                     font=("Segoe UI", 9, "bold")).pack()
-            tk.Label(card, text=f"{info['size']:,} images", bg=CARD_BG, fg=FG,
-                     font=("Segoe UI", 9)).pack()
+            alb_title = QLabel(f"Album {idx + 1}")
+            alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt; border: none;")
+            card_layout.addWidget(alb_title)
+
+            size_lbl = QLabel(f"{info['size']:,} images")
+            size_lbl.setStyleSheet("border: none;")
+            card_layout.addWidget(size_lbl)
 
             def view_album(members=info["members"], album_num=idx + 1):
-                dialog.destroy()
+                dlg.accept()
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, os.path.join(self.folder, self.image_paths[i]), "image", {})
@@ -4559,42 +4205,46 @@ class ImageSearchApp:
                 self.total_found = len(album_results)
                 self.show_more_offset = 0
                 self.update_status(f"Smart Album {album_num}: {len(album_results)} images", "green")
-                cw = max(self.canvas.winfo_width(), CELL_WIDTH)
+                vp_width = self.scroll_area.viewport().width()
+                cw = max(vp_width, CELL_WIDTH)
                 self.render_cols = max(1, cw // CELL_WIDTH)
-                initial_n = max(10, self.top_n_var.get())
+                initial_n = max(10, self.top_n_slider.value() * 10)
                 first_batch = album_results[:initial_n]
                 self.show_more_offset = len(first_batch)
                 self.stop_search = False
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
 
-            ttk.Button(card, text="View Album", command=view_album).pack(pady=(2, 6))
+            view_btn = QPushButton("View Album")
+            view_btn.clicked.connect(view_album)
+            card_layout.addWidget(view_btn)
 
-        bottom = tk.Frame(dialog, bg=PANEL_BG)
-        bottom.pack(fill="x", padx=8, pady=6)
-        tk.Label(bottom,
-                 text=f"Tip: Rebuild with more or fewer albums to change granularity.",
-                 bg=PANEL_BG, fg="#888888", font=("Segoe UI", 8)).pack(side="left", padx=8)
+            grid_layout.addWidget(card, row, col)
 
-        def _on_alb_close():
-            try:
-                alb_canvas.unbind_all("<MouseWheel>")
-            except Exception:
-                pass
-            dialog.destroy()
-
-        ttk.Button(bottom, text="Close", command=_on_alb_close, width=10).pack(side="right", padx=8, pady=4)
-        dialog.protocol("WM_DELETE_WINDOW", _on_alb_close)
+        bottom_row = QHBoxLayout()
+        tip_lbl = QLabel("Tip: Rebuild with more or fewer albums to change granularity.")
+        tip_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
+        bottom_row.addWidget(tip_lbl)
+        bottom_row.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        bottom_row.addWidget(close_btn)
+        layout.addLayout(bottom_row)
+        dlg.exec()
 
 
 if __name__ == "__main__":
     print("=" * 60)
     print("Makimus - AI Media Search (Cross-Platform GPU Accelerated)")
-    print("With Relative Path Support for Portability")
     print("=" * 60)
-    if _DND_AVAILABLE:
-        root = TkinterDnD.Tk()
-    else:
-        root = tk.Tk()
-    app = ImageSearchApp(root)
-    root.mainloop()
+
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")  # consistent cross-platform look
+
+    # Apply dark QSS theme
+    app.setStyleSheet(DARK_QSS)
+
+    window = ImageSearchApp()
+    window.show()
+    sys.exit(app.exec())
+
