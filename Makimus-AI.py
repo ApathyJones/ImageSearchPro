@@ -44,7 +44,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
     QInputDialog, QComboBox)
 from PyQt6.QtGui import (
-    QPixmap, QImage, QFont, QCursor, QAction, QKeySequence)
+    QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon)
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal)
 
@@ -1444,6 +1444,11 @@ class ImageSearchApp(QMainWindow):
         self.video_cache_file = None
         self._pending_video_refresh = False
 
+        # Face recognition index and presets
+        self._face_app = None         # insightface FaceAnalysis (lazy-loaded)
+        self.face_index = {}          # rel_path -> list of 512d ArcFace embeddings
+        self.face_presets = {}        # name -> {"embedding": np.array, "references": [rel_paths]}
+
         # Pending batch accumulators — filled during indexing, flushed before save/search
         # Avoids O(N^2) np.concatenate per batch for large collections
         self._pending_image_batches = []
@@ -1613,6 +1618,14 @@ class ImageSearchApp(QMainWindow):
         btn_nsfw.setToolTip("Scan indexed images with NudeNet (pip install nudenet)")
         btn_nsfw.clicked.connect(self.on_nsfw_scan)
         toolbar_layout.addWidget(btn_nsfw)
+
+        btn_faces = QPushButton("Face Presets")
+        btn_faces.setToolTip(
+            "Create named presets for people and search your library by face.\n"
+            "Uses InsightFace ArcFace (buffalo_l) — pip install insightface onnxruntime"
+        )
+        btn_faces.clicked.connect(self.on_face_presets)
+        toolbar_layout.addWidget(btn_faces)
 
         self.status_label = QLabel("Starting...")
         self.status_label.setMinimumWidth(250)
@@ -2235,6 +2248,7 @@ class ImageSearchApp(QMainWindow):
         self.excluded_folders = set()
         self.load_exclusions()
         self.load_search_history()
+        self._load_face_data()
         safe_print(f"\n{'='*60}\n[FOLDER] {folder}")
         
         cache_files = self.get_cache_filename()
@@ -5494,6 +5508,552 @@ class ImageSearchApp(QMainWindow):
         self.stop_search = False
         self.is_searching = True
         self.start_thumbnail_loader(first_batch, self.search_generation)
+
+
+    # ── Feature: Face Recognition Presets ─────────────────────────────────────
+
+    def _get_face_app(self):
+        """Lazy-load InsightFace FaceAnalysis with ArcFace buffalo_l model."""
+        if self._face_app is not None:
+            return self._face_app
+        try:
+            from insightface.app import FaceAnalysis
+        except ImportError:
+            raise RuntimeError(
+                "insightface is not installed.\n"
+                "Install with:  pip install insightface onnxruntime\n"
+                "(Use onnxruntime-gpu for faster processing on NVIDIA GPUs)"
+            )
+        app = FaceAnalysis(name="buffalo_l",
+                           providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+        app.prepare(ctx_id=0, det_size=(640, 640))
+        self._face_app = app
+        return app
+
+    def _face_index_path(self):
+        return os.path.join(self.folder, ".face_index.pkl") if self.folder else None
+
+    def _face_presets_path(self):
+        return os.path.join(self.folder, ".face_presets.json") if self.folder else None
+
+    def _load_face_data(self):
+        """Load face index and presets from the current folder."""
+        self.face_index = {}
+        self.face_presets = {}
+        fp = self._face_index_path()
+        if fp and os.path.exists(fp):
+            try:
+                with open(fp, "rb") as f:
+                    self.face_index = pickle.load(f)
+                safe_print(f"[FACE] Loaded face index: {len(self.face_index)} images")
+            except Exception as e:
+                safe_print(f"[FACE] Failed to load face index: {e}")
+                self.face_index = {}
+        pp = self._face_presets_path()
+        if pp and os.path.exists(pp):
+            try:
+                with open(pp, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                self.face_presets = {
+                    name: {
+                        "embedding": np.array(data["embedding"], dtype=np.float32),
+                        "references": data.get("references", []),
+                    }
+                    for name, data in raw.items()
+                }
+                safe_print(f"[FACE] Loaded {len(self.face_presets)} face presets")
+            except Exception as e:
+                safe_print(f"[FACE] Failed to load presets: {e}")
+                self.face_presets = {}
+
+    def _save_face_index(self):
+        fp = self._face_index_path()
+        if not fp:
+            return
+        try:
+            tmp = fp + ".tmp"
+            with open(tmp, "wb") as f:
+                pickle.dump(self.face_index, f, protocol=pickle.HIGHEST_PROTOCOL)
+            if os.path.exists(fp):
+                os.remove(fp)
+            os.rename(tmp, fp)
+            safe_print(f"[FACE] Saved face index: {len(self.face_index)} images")
+        except Exception as e:
+            safe_print(f"[FACE] Failed to save face index: {e}")
+
+    def _save_face_presets(self):
+        pp = self._face_presets_path()
+        if not pp:
+            return
+        try:
+            serializable = {
+                name: {
+                    "embedding": data["embedding"].tolist(),
+                    "references": data["references"],
+                }
+                for name, data in self.face_presets.items()
+            }
+            with open(pp, "w", encoding="utf-8") as f:
+                json.dump(serializable, f, indent=2)
+        except Exception as e:
+            safe_print(f"[FACE] Failed to save presets: {e}")
+
+    def on_face_presets(self):
+        if not self.folder:
+            QMessageBox.warning(self, "No Folder", "Please select and index a folder first.")
+            return
+        self.open_face_presets_dialog()
+
+    def open_face_presets_dialog(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Face Presets — Person Recognition")
+        dlg.resize(920, 620)
+        main_layout = QVBoxLayout(dlg)
+
+        # ── Face index status bar ──────────────────────────────────────────
+        idx_bar = QHBoxLayout()
+        n_indexed = len(self.face_index)
+        n_total = len(self.image_paths)
+        idx_status_lbl = QLabel(
+            f"Face index: {n_indexed:,} / {n_total:,} images scanned"
+            if n_indexed else "Face index not built yet — click 'Build Face Index' to start."
+        )
+        idx_bar.addWidget(idx_status_lbl)
+        idx_bar.addStretch()
+        build_btn = QPushButton("Build / Rebuild Face Index")
+        build_btn.setToolTip(
+            "Scans every indexed image with InsightFace ArcFace (buffalo_l).\n"
+            "Downloads ~300 MB model on first run.\n"
+            "Required before searching by person."
+        )
+        idx_bar.addWidget(build_btn)
+        main_layout.addLayout(idx_bar)
+
+        # ── Split: preset list (left) + reference photos (right) ──────────
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(splitter, stretch=1)
+
+        # Left panel — preset list
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.addWidget(QLabel("Person Presets:"))
+        preset_list = QListWidget()
+        for name in sorted(self.face_presets.keys()):
+            preset_list.addItem(name)
+        left_layout.addWidget(preset_list, stretch=1)
+        preset_btn_row = QHBoxLayout()
+        add_preset_btn = QPushButton("New Preset")
+        rename_preset_btn = QPushButton("Rename")
+        del_preset_btn = QPushButton("Delete")
+        del_preset_btn.setProperty("class", "danger")
+        preset_btn_row.addWidget(add_preset_btn)
+        preset_btn_row.addWidget(rename_preset_btn)
+        preset_btn_row.addWidget(del_preset_btn)
+        left_layout.addLayout(preset_btn_row)
+        splitter.addWidget(left_widget)
+
+        # Right panel — reference photos for selected preset
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_header = QHBoxLayout()
+        right_header.addWidget(QLabel("Reference photos (select a preset to manage):"))
+        right_header.addStretch()
+        add_ref_btn = QPushButton("Add Reference Photo…")
+        add_ref_btn.setEnabled(False)
+        right_header.addWidget(add_ref_btn)
+        right_layout.addLayout(right_header)
+        ref_scroll = QScrollArea()
+        ref_scroll.setWidgetResizable(True)
+        ref_inner = QWidget()
+        ref_grid = QGridLayout(ref_inner)
+        ref_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        ref_scroll.setWidget(ref_inner)
+        right_layout.addWidget(ref_scroll, stretch=1)
+        splitter.addWidget(right_widget)
+        splitter.setSizes([280, 640])
+
+        # ── Bottom search controls ─────────────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        main_layout.addWidget(sep)
+        search_bar = QHBoxLayout()
+        search_bar.addWidget(QLabel("Match threshold:"))
+        thresh_slider = QSlider(Qt.Orientation.Horizontal)
+        thresh_slider.setRange(20, 80)
+        thresh_slider.setValue(45)
+        thresh_lbl = QLabel("0.45")
+        thresh_slider.valueChanged.connect(lambda v: thresh_lbl.setText(f"{v/100:.2f}"))
+        thresh_slider.setToolTip(
+            "Cosine similarity required to count as a match.\n"
+            "0.45 is a good starting point — lower to catch more, raise to reduce false positives."
+        )
+        search_bar.addWidget(thresh_slider)
+        search_bar.addWidget(thresh_lbl)
+        search_bar.addStretch()
+        search_btn = QPushButton("Search by Selected Person")
+        search_btn.setProperty("class", "accent")
+        search_btn.setEnabled(False)
+        search_bar.addWidget(search_btn)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        search_bar.addWidget(close_btn)
+        main_layout.addLayout(search_bar)
+
+        # ── Helpers ────────────────────────────────────────────────────────
+
+        def _recompute_preset_embedding(name):
+            """Re-extract face embeddings from all reference images and average them."""
+            preset = self.face_presets.get(name)
+            if preset is None:
+                return
+            embs = []
+            try:
+                app = self._get_face_app()
+            except RuntimeError:
+                return
+            for ref_path in preset["references"]:
+                abs_path = (ref_path if os.path.isabs(ref_path)
+                            else os.path.join(self.folder, ref_path))
+                if not os.path.exists(abs_path):
+                    continue
+                try:
+                    pil_img = open_image(abs_path)
+                    if pil_img is None:
+                        continue
+                    img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
+                    faces = app.get(img_bgr)
+                    if faces:
+                        largest = max(faces,
+                                      key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+                        embs.append(largest.embedding)
+                except Exception as e:
+                    safe_print(f"[FACE] Error re-extracting {ref_path}: {e}")
+            if embs:
+                avg = np.mean(embs, axis=0).astype(np.float32)
+                norm = np.linalg.norm(avg)
+                preset["embedding"] = avg / norm if norm > 0 else avg
+            else:
+                preset["embedding"] = np.zeros(512, dtype=np.float32)
+
+        def _refresh_ref_panel(name):
+            while ref_grid.count():
+                item = ref_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            if name not in self.face_presets:
+                return
+            refs = self.face_presets[name]["references"]
+            if not refs:
+                ref_grid.addWidget(
+                    QLabel("No reference photos yet.\nClick 'Add Reference Photo…' to add some."), 0, 0)
+                return
+            for idx, ref_path in enumerate(refs):
+                abs_path = (ref_path if os.path.isabs(ref_path)
+                            else os.path.join(self.folder, ref_path))
+                cell = QWidget()
+                cell_layout = QVBoxLayout(cell)
+                cell_layout.setContentsMargins(4, 4, 4, 4)
+                pil_img = open_image(abs_path) if os.path.exists(abs_path) else None
+                if pil_img:
+                    pil_img.thumbnail((100, 100))
+                    lbl = QLabel()
+                    lbl.setPixmap(pil_to_pixmap(pil_img))
+                    lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    cell_layout.addWidget(lbl)
+                else:
+                    cell_layout.addWidget(QLabel("[missing]"))
+                fname = os.path.basename(ref_path)
+                if len(fname) > 16:
+                    fname = fname[:13] + "..."
+                name_lbl = QLabel(fname)
+                name_lbl.setStyleSheet("font-size: 8pt;")
+                name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                cell_layout.addWidget(name_lbl)
+                rm_btn = QPushButton("Remove")
+                rm_btn.setProperty("class", "danger")
+
+                def _remove_ref(checked=False, i=idx, n=name):
+                    self.face_presets[n]["references"].pop(i)
+                    _recompute_preset_embedding(n)
+                    self._save_face_presets()
+                    _refresh_ref_panel(n)
+
+                rm_btn.clicked.connect(_remove_ref)
+                cell_layout.addWidget(rm_btn)
+                ref_grid.addWidget(cell, idx // 4, idx % 4)
+
+        def _on_preset_selected():
+            item = preset_list.currentItem()
+            has = item is not None
+            add_ref_btn.setEnabled(has)
+            search_btn.setEnabled(has and len(self.face_index) > 0)
+            if has:
+                _refresh_ref_panel(item.text())
+            else:
+                while ref_grid.count():
+                    w = ref_grid.takeAt(0)
+                    if w.widget():
+                        w.widget().deleteLater()
+
+        preset_list.currentItemChanged.connect(lambda *_: _on_preset_selected())
+
+        # ── Preset management ──────────────────────────────────────────────
+
+        def _add_preset():
+            text, ok = QInputDialog.getText(dlg, "New Preset", "Person name:")
+            text = text.strip()
+            if not ok or not text:
+                return
+            if text in self.face_presets:
+                QMessageBox.warning(dlg, "Already Exists", f"A preset named '{text}' already exists.")
+                return
+            self.face_presets[text] = {
+                "embedding": np.zeros(512, dtype=np.float32),
+                "references": [],
+            }
+            self._save_face_presets()
+            preset_list.addItem(text)
+            preset_list.setCurrentRow(preset_list.count() - 1)
+
+        def _rename_preset():
+            item = preset_list.currentItem()
+            if not item:
+                return
+            old = item.text()
+            text, ok = QInputDialog.getText(dlg, "Rename Preset", "New name:", text=old)
+            text = text.strip()
+            if not ok or not text or text == old:
+                return
+            if text in self.face_presets:
+                QMessageBox.warning(dlg, "Already Exists", f"'{text}' already exists.")
+                return
+            self.face_presets[text] = self.face_presets.pop(old)
+            self._save_face_presets()
+            item.setText(text)
+
+        def _delete_preset():
+            item = preset_list.currentItem()
+            if not item:
+                return
+            name = item.text()
+            if QMessageBox.question(
+                dlg, "Delete Preset", f"Delete preset '{name}'?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            del self.face_presets[name]
+            self._save_face_presets()
+            preset_list.takeItem(preset_list.row(item))
+            _on_preset_selected()
+
+        add_preset_btn.clicked.connect(_add_preset)
+        rename_preset_btn.clicked.connect(_rename_preset)
+        del_preset_btn.clicked.connect(_delete_preset)
+
+        # ── Add reference photo ────────────────────────────────────────────
+
+        def _pick_face_dialog(pil_img, faces, img_path):
+            """Show cropped face thumbnails so the user can pick the right person."""
+            pick_dlg = QDialog(dlg)
+            pick_dlg.setWindowTitle("Multiple faces — select the correct person")
+            pl = QVBoxLayout(pick_dlg)
+            pl.addWidget(QLabel(
+                f"{len(faces)} faces found in {os.path.basename(img_path)}.\n"
+                "Click the correct person:"))
+            face_row = QHBoxLayout()
+            chosen = [None]
+            img_arr = np.array(pil_img.convert("RGB"))
+            for i, face in enumerate(faces):
+                x1, y1, x2, y2 = [int(c) for c in face.bbox]
+                pad = 20
+                h, w = img_arr.shape[:2]
+                x1, y1 = max(0, x1 - pad), max(0, y1 - pad)
+                x2, y2 = min(w, x2 + pad), min(h, y2 + pad)
+                crop = Image.fromarray(img_arr[y1:y2, x1:x2])
+                crop.thumbnail((120, 120))
+                pixmap = pil_to_pixmap(crop)
+                btn = QPushButton()
+                btn.setIcon(QIcon(pixmap))
+                btn.setIconSize(pixmap.size())
+                btn.setFixedSize(pixmap.width() + 16, pixmap.height() + 16)
+                btn.setToolTip(f"Face {i + 1}")
+
+                def _pick(checked=False, idx=i):
+                    chosen[0] = idx
+                    pick_dlg.accept()
+
+                btn.clicked.connect(_pick)
+                face_row.addWidget(btn)
+            pl.addLayout(face_row)
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.clicked.connect(pick_dlg.reject)
+            pl.addWidget(cancel_btn)
+            pick_dlg.exec()
+            return chosen[0]
+
+        def _add_reference():
+            item = preset_list.currentItem()
+            if not item:
+                return
+            preset_name = item.text()
+            paths, _ = QFileDialog.getOpenFileNames(
+                dlg, "Select Reference Photo(s)", self.folder or "",
+                "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tiff *.tif)")
+            if not paths:
+                return
+            added, errors = 0, []
+            for path in paths:
+                try:
+                    app = self._get_face_app()
+                    pil_img = open_image(path)
+                    if pil_img is None:
+                        errors.append(f"{os.path.basename(path)}: could not open")
+                        continue
+                    img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
+                    faces = app.get(img_bgr)
+                    if not faces:
+                        errors.append(f"{os.path.basename(path)}: no face detected")
+                        continue
+                    if len(faces) > 1:
+                        face_idx = _pick_face_dialog(pil_img, faces, path)
+                        if face_idx is None:
+                            continue
+                    else:
+                        face_idx = 0
+                    # Store relative path when inside the indexed folder
+                    try:
+                        rel = os.path.relpath(path, self.folder)
+                        if rel.startswith(".."):
+                            rel = path
+                    except ValueError:
+                        rel = path
+                    self.face_presets[preset_name]["references"].append(rel)
+                    added += 1
+                except RuntimeError as e:
+                    QMessageBox.critical(dlg, "Missing Dependency", str(e))
+                    return
+                except Exception as e:
+                    errors.append(f"{os.path.basename(path)}: {e}")
+            if added:
+                _recompute_preset_embedding(preset_name)
+                self._save_face_presets()
+                _refresh_ref_panel(preset_name)
+            if errors:
+                QMessageBox.warning(dlg, "Some photos skipped",
+                    "\n".join(errors[:10]) + ("\n…" if len(errors) > 10 else ""))
+
+        add_ref_btn.clicked.connect(_add_reference)
+
+        # ── Build face index ───────────────────────────────────────────────
+
+        def _start_build():
+            if not self.image_paths:
+                QMessageBox.warning(dlg, "Not Ready", "No images indexed yet.")
+                return
+            build_btn.setEnabled(False)
+            build_btn.setText("Building…")
+            idx_status_lbl.setText("Initialising InsightFace model…")
+            Thread(target=_build_worker, daemon=True).start()
+
+        def _build_worker():
+            try:
+                app = self._get_face_app()
+            except RuntimeError as e:
+                self._safe_after(0, lambda: QMessageBox.critical(dlg, "Missing Dependency", str(e)))
+                self._safe_after(0, lambda: build_btn.setEnabled(True))
+                self._safe_after(0, lambda: build_btn.setText("Build / Rebuild Face Index"))
+                return
+            n = len(self.image_paths)
+            face_index = {}
+            self._safe_after(0, lambda: self.progress.setRange(0, n))
+            for i, rel_path in enumerate(self.image_paths):
+                if self.stop_search:
+                    break
+                abs_path = os.path.join(self.folder, rel_path)
+                try:
+                    pil_img = open_image(abs_path)
+                    if pil_img is None:
+                        continue
+                    img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
+                    faces = app.get(img_bgr)
+                    if faces:
+                        face_index[rel_path] = [f.embedding for f in faces]
+                except Exception as e:
+                    safe_print(f"[FACE] Error on {rel_path}: {e}")
+                if i % 20 == 0:
+                    pct = i + 1
+                    self._safe_after(0, lambda v=pct: self.progress.setValue(v))
+                    self._safe_after(0, lambda v=pct, tot=n: idx_status_lbl.setText(
+                        f"Scanning… {v:,} / {tot:,}"))
+            self.face_index = face_index
+            self._save_face_index()
+            n_faces = sum(len(v) for v in face_index.values())
+            msg = f"Face index: {len(face_index):,} images, {n_faces:,} faces detected"
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(100))
+            self._safe_after(0, lambda: idx_status_lbl.setText(msg))
+            self._safe_after(0, lambda: build_btn.setEnabled(True))
+            self._safe_after(0, lambda: build_btn.setText("Build / Rebuild Face Index"))
+            self._safe_after(0, _on_preset_selected)
+            safe_print(f"[FACE] {msg}")
+
+        build_btn.clicked.connect(_start_build)
+
+        # ── Search by person ───────────────────────────────────────────────
+
+        def _do_search():
+            item = preset_list.currentItem()
+            if not item:
+                return
+            preset_name = item.text()
+            threshold = thresh_slider.value() / 100.0
+            if not self.face_index:
+                QMessageBox.warning(dlg, "No Face Index",
+                    "Build the face index first.")
+                return
+            preset_emb = self.face_presets[preset_name]["embedding"]
+            if np.all(preset_emb == 0):
+                QMessageBox.warning(dlg, "No References",
+                    "Add at least one reference photo to this preset first.")
+                return
+            dlg.accept()
+            self.update_status(f"Searching for '{preset_name}'…", "orange")
+            Thread(
+                target=lambda: self._face_search_worker(preset_name, preset_emb, threshold),
+                daemon=True,
+            ).start()
+
+        search_btn.clicked.connect(_do_search)
+        _on_preset_selected()
+        dlg.exec()
+
+    def _face_search_worker(self, preset_name, preset_emb, threshold):
+        try:
+            results = []
+            norm_preset = preset_emb / (np.linalg.norm(preset_emb) + 1e-8)
+            for rel_path, face_embs in self.face_index.items():
+                best_sim = max(
+                    float(np.dot(norm_preset, fe / (np.linalg.norm(fe) + 1e-8)))
+                    for fe in face_embs
+                )
+                if best_sim >= threshold:
+                    abs_path = os.path.join(self.folder, rel_path)
+                    results.append((best_sim, abs_path, "image", {}))
+            results.sort(key=lambda x: x[0], reverse=True)
+            if not results:
+                self._safe_after(0, lambda: self.update_status(
+                    f"No matches for '{preset_name}'", "orange"))
+                self._safe_after(0, lambda: QMessageBox.information(
+                    self, "No Matches",
+                    f"No images matched '{preset_name}' above threshold {threshold:.2f}.\n"
+                    "Try lowering the threshold or adding more reference photos."))
+                return
+            title = f"Face: {preset_name}"
+            self._safe_after(0, lambda r=results, t=title: self._nsfw_load_results(r, t))
+        except Exception as e:
+            safe_print(f"[FACE] Search error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.update_status("Face search failed", "red"))
 
 
 if __name__ == "__main__":
