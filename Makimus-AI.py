@@ -871,20 +871,42 @@ class SigLIP2BackendModel:
         input_size = model_cfg.get("input_size", 384)
         safe_print(f"[MODEL] Loading SigLIP2: {hf_id}")
 
-        # Try offline first, fall back to download
+        # Try offline first (uses local HuggingFace cache if the model was previously
+        # downloaded), then fall back to a live download on first use.
+        _prev_hf  = os.environ.get("HF_HUB_OFFLINE", "")
+        _prev_tr  = os.environ.get("TRANSFORMERS_OFFLINE", "")
         try:
-            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["HF_HUB_OFFLINE"]     = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
             self.processor = AutoProcessor.from_pretrained(hf_id)
             self.hf_model  = AutoModel.from_pretrained(hf_id)
             safe_print(f"[MODEL] Loaded from local cache")
         except Exception:
-            safe_print(f"[MODEL] Cache not available, downloading {hf_id}...")
-            os.environ["HF_HUB_OFFLINE"] = "0"
+            safe_print(f"[MODEL] Not cached — downloading {hf_id} (first run only)...")
+            os.environ["HF_HUB_OFFLINE"]     = "0"
             os.environ["TRANSFORMERS_OFFLINE"] = "0"
-            self.processor = AutoProcessor.from_pretrained(hf_id)
-            self.hf_model  = AutoModel.from_pretrained(hf_id)
-            safe_print(f"[MODEL] Download complete!")
+            try:
+                self.processor = AutoProcessor.from_pretrained(hf_id)
+                self.hf_model  = AutoModel.from_pretrained(hf_id)
+                safe_print(f"[MODEL] Download complete!")
+            except Exception as dl_err:
+                raise RuntimeError(
+                    f"Could not load {hf_id}.\n\n"
+                    "SigLIP2 must be downloaded once before it can be used offline.\n"
+                    "Please ensure internet access and try again, or switch to\n"
+                    "CLIP ViT-L-14 (always available) via the Model button.\n\n"
+                    f"Original error: {dl_err}"
+                ) from dl_err
+        finally:
+            # Restore whatever offline setting was in effect before we changed it
+            if _prev_hf:
+                os.environ["HF_HUB_OFFLINE"] = _prev_hf
+            else:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            if _prev_tr:
+                os.environ["TRANSFORMERS_OFFLINE"] = _prev_tr
+            else:
+                os.environ.pop("TRANSFORMERS_OFFLINE", None)
 
         try:
             self.hf_model = self.hf_model.to(self.device).eval()
