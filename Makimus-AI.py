@@ -1369,6 +1369,12 @@ class ImageSearchApp(QMainWindow):
 
         # ── Active model ──────────────────────────────────────────────────────
         _settings = _load_app_settings()
+
+        # Apply saved HuggingFace token so downloads work without any manual setup
+        _hf_token = _settings.get("hf_token", "")
+        if _hf_token and not os.environ.get("HF_TOKEN"):
+            os.environ["HF_TOKEN"] = _hf_token
+
         self.active_model_key = _settings.get("model_key", DEFAULT_MODEL_KEY)
         if self.active_model_key not in MODEL_REGISTRY:
             self.active_model_key = DEFAULT_MODEL_KEY
@@ -1565,6 +1571,11 @@ class ImageSearchApp(QMainWindow):
         self.device_label = QLabel("...")
         self.device_label.setStyleSheet(f"color: {ACCENT_SECONDARY};")
         toolbar_layout.addWidget(self.device_label)
+
+        btn_hf_token = QPushButton("HF Token")
+        btn_hf_token.setToolTip("Set your HuggingFace token (needed for SigLIP2 / DINOv3 downloads)")
+        btn_hf_token.clicked.connect(self.set_hf_token)
+        toolbar_layout.addWidget(btn_hf_token)
 
         btn_info = QPushButton("?")
         btn_info.setFixedWidth(30)
@@ -1895,6 +1906,34 @@ class ImageSearchApp(QMainWindow):
             label = MODEL_REGISTRY[self.active_model_key]["label"]
             self.query_entry.setPlaceholderText(
                 f"{label} is vision-only — use Image search")
+
+    def set_hf_token(self):
+        """Let the user enter their HuggingFace token and save it to the app config."""
+        current = _load_app_settings().get("hf_token", os.environ.get("HF_TOKEN", ""))
+        token, ok = QInputDialog.getText(
+            self, "HuggingFace Token",
+            "Paste your HuggingFace token (hf_...).\n"
+            "Required for first-time download of SigLIP2 and DINOv3 models.\n"
+            "Get a free read token at huggingface.co/settings/tokens\n\n"
+            "Leave blank to clear the saved token.",
+            QLineEdit.EchoMode.Password,
+            current,
+        )
+        if not ok:
+            return
+        token = token.strip()
+        settings = _load_app_settings()
+        if token:
+            settings["hf_token"] = token
+            os.environ["HF_TOKEN"] = token
+            QMessageBox.information(self, "Token Saved",
+                "HuggingFace token saved.\n"
+                "It will be applied automatically on every launch.")
+        else:
+            settings.pop("hf_token", None)
+            os.environ.pop("HF_TOKEN", None)
+            QMessageBox.information(self, "Token Cleared", "HuggingFace token removed.")
+        _save_app_settings(settings)
 
     def open_model_selector(self):
         """Open the model-selection dialog.  Only allowed when not indexing."""
