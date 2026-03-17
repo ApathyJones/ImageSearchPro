@@ -1281,9 +1281,15 @@ class ImageSearchApp(QMainWindow):
         self.progress_label.setText(text)
 
     def _safe_after(self, ms, func):
-        """QTimer.singleShot wrapper safe to call from any thread."""
+        """Schedule func on the main-thread event loop from any thread.
+
+        QTimer.singleShot(ms, callable) is NOT thread-safe in PyQt6.
+        The 3-argument form QTimer.singleShot(ms, context, callable) posts
+        the event to the context object's thread, making it safe to call
+        from background worker threads.
+        """
         try:
-            QTimer.singleShot(ms, func)
+            QTimer.singleShot(ms, self, func)
         except Exception:
             pass
 
