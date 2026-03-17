@@ -4492,8 +4492,7 @@ class ImageSearchApp(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Find Duplicates")
-        dlg.resize(440, 240)
-        dlg.setFixedSize(440, 240)
+        dlg.setMinimumWidth(460)
         layout = QVBoxLayout(dlg)
 
         layout.addWidget(QLabel("Similarity threshold for duplicate detection:"))
@@ -4509,9 +4508,11 @@ class ImageSearchApp(QMainWindow):
         row.addWidget(thresh_label)
         layout.addLayout(row)
 
-        auto_cb = QCheckBox(
-            "Auto-adjust threshold if no matches found  "
-            "(lowers threshold by 0.01 each retry until a match is found)"
+        auto_cb = QCheckBox("Auto-adjust threshold if no matches found")
+        auto_cb.setToolTip(
+            "If the scan finds 0 duplicate groups, automatically retry\n"
+            "with the threshold lowered by 0.01 each pass until a match\n"
+            "is found or the floor of 0.70 is reached."
         )
         auto_cb.setChecked(False)
         layout.addWidget(auto_cb)
