@@ -4276,6 +4276,16 @@ if __name__ == "__main__":
     print("Makimus - AI Media Search (Cross-Platform GPU Accelerated)")
     print("=" * 60)
 
+    # Ensure Qt uses its own platform plugins.
+    # opencv-python and other packages can corrupt QT_PLUGIN_PATH or load
+    # conflicting Qt DLLs, causing qwindows.dll to fail even though it's found.
+    # Pinning the path to PyQt6's own plugins directory fixes this.
+    import PyQt6 as _pyqt6_pkg
+    _qt_plugin_dir = os.path.join(os.path.dirname(_pyqt6_pkg.__file__), 'Qt6', 'plugins')
+    if os.path.isdir(_qt_plugin_dir):
+        os.environ['QT_PLUGIN_PATH'] = _qt_plugin_dir
+        os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = os.path.join(_qt_plugin_dir, 'platforms')
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # consistent cross-platform look
 
