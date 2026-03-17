@@ -1015,6 +1015,16 @@ class SigLIP2BackendModel:
             else:
                 features = self.hf_model.get_image_features(pixel_values=pixel_values)
 
+        # Some transformers versions return a BaseModelOutputWithPooling dataclass
+        # instead of a raw tensor.  Unwrap to the pooled embedding.
+        if not isinstance(features, torch.Tensor):
+            if hasattr(features, 'pooler_output') and features.pooler_output is not None:
+                features = features.pooler_output
+            elif hasattr(features, 'last_hidden_state'):
+                features = features.last_hidden_state[:, 0]  # CLS token
+            else:
+                features = features[0]
+
         features = features.float()
         features = features / features.norm(dim=-1, keepdim=True)
         return features.cpu().numpy()
@@ -1031,6 +1041,14 @@ class SigLIP2BackendModel:
                     features = self.hf_model.get_text_features(**inputs)
             else:
                 features = self.hf_model.get_text_features(**inputs)
+
+        if not isinstance(features, torch.Tensor):
+            if hasattr(features, 'pooler_output') and features.pooler_output is not None:
+                features = features.pooler_output
+            elif hasattr(features, 'last_hidden_state'):
+                features = features.last_hidden_state[:, 0]
+            else:
+                features = features[0]
 
         features = features.float()
         features = features / features.norm(dim=-1, keepdim=True)
