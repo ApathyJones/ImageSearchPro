@@ -2077,7 +2077,31 @@ class ImageSearchApp(QMainWindow):
             self.video_cache_file  = None
             self._pending_image_batches = []
             self._pending_video_batches = []
+            # Explicitly evict the old model from VRAM before loading the new one.
+            # Simply setting clip_model=None is not enough — Python's GC may not
+            # run before the new model's allocations begin, leaving both models in
+            # VRAM simultaneously and causing an OOM error.
+            old_model = self.clip_model
             self.clip_model = None
+            if old_model is not None:
+                try:
+                    import torch, gc
+                    # Move weights to CPU so CUDA allocator can reclaim the pages.
+                    inner = getattr(old_model, 'model', None)
+                    if inner is not None and hasattr(inner, 'cpu'):
+                        inner.cpu()
+                    # Also handle SigLIP2 / DINOv3 which store the model differently.
+                    for attr in ('visual_model', 'text_model', '_model'):
+                        sub = getattr(old_model, attr, None)
+                        if sub is not None and hasattr(sub, 'cpu'):
+                            sub.cpu()
+                    del old_model
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                except Exception:
+                    del old_model
             self.update_status(f"Loading {cfg['label']}...", "orange")
             QMessageBox.information(
                 self, "Model Changed",
