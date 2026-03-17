@@ -1298,10 +1298,13 @@ class ImageSearchApp(QMainWindow):
         the event to the context object's thread, making it safe to call
         from background worker threads.
         """
+        import threading
+        safe_print(f"[SAFE_AFTER] scheduling {getattr(func, '__name__', repr(func)[:60])} "
+                   f"in {ms}ms from thread={threading.current_thread().name}")
         try:
             QTimer.singleShot(ms, self, func)
-        except Exception:
-            pass
+        except Exception as e:
+            safe_print(f"[SAFE_AFTER ERROR] {e}")
 
     def on_scroll_area_resize(self):
         vp_width = self.scroll_area.viewport().width()
@@ -2905,21 +2908,28 @@ class ImageSearchApp(QMainWindow):
             self.is_searching = False
 
     def start_thumbnail_loader(self, results, generation):
-        safe_print(f"[THUMBNAILS] Starting loader for {len(results)} results")
+        import threading
+        safe_print(f"[THUMBNAILS] start_thumbnail_loader called: {len(results)} results, "
+                   f"gen={generation}, thread={threading.current_thread().name}")
         with self.thumbnail_queue.mutex:
             self.thumbnail_queue.queue.clear()
         t = Thread(target=self.load_thumbnails_worker, args=(results, generation), daemon=True)
         self._thumbnail_worker_thread = t
         t.start()
+        safe_print(f"[THUMBNAILS] worker thread started: {t.name}, scheduling check_thumbnail_queue")
         self._safe_after(10, lambda: self.check_thumbnail_queue(generation))
 
     def load_thumbnails_worker(self, results, generation):
+        import threading
+        safe_print(f"[THUMBNAILS] load_thumbnails_worker started: {len(results)} items, "
+                   f"gen={generation}, thread={threading.current_thread().name}")
         loaded = 0
         failed = 0
         for item in results:
             score, path, result_type, metadata = item
             if self.stop_search or generation != self.search_generation:
-                safe_print(f"[THUMBNAILS] Stopped (loaded {loaded}, failed {failed})")
+                safe_print(f"[THUMBNAILS] Stopped early: stop_search={self.stop_search}, "
+                           f"gen={generation} vs current={self.search_generation}")
                 break
             try:
                 if result_type == "image":
@@ -2930,9 +2940,11 @@ class ImageSearchApp(QMainWindow):
                                 rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
                             img = Image.fromarray(rgb)
                         except ImportError:
+                            safe_print(f"[THUMBNAILS] rawpy not installed, skipping RAW: {path}")
                             failed += 1
                             continue
-                        except Exception:
+                        except Exception as e:
+                            safe_print(f"[THUMBNAILS] RAW load failed: {path}: {e}")
                             failed += 1
                             continue
                     else:
@@ -2963,41 +2975,60 @@ class ImageSearchApp(QMainWindow):
                     ret, frame = cap.read()
                     cap.release()
                     if not ret or frame is None:
+                        safe_print(f"[THUMBNAILS] Video frame read failed: {path}")
                         failed += 1
                         continue
                     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     img = Image.fromarray(frame_rgb)
                     img.thumbnail(THUMBNAIL_SIZE)
                 else:
+                    safe_print(f"[THUMBNAILS] Unknown result_type={result_type}: {path}")
                     failed += 1
                     continue
                 self.thumbnail_queue.put((score, path, img, result_type, metadata))
                 loaded += 1
+                safe_print(f"[THUMBNAILS] Queued {loaded}: {os.path.basename(path)}")
             except Exception as e:
+                import traceback
+                safe_print(f"[THUMBNAILS] Exception loading {path}: {e}")
+                safe_print(traceback.format_exc())
                 failed += 1
-        safe_print(f"[THUMBNAILS] Completed: {loaded} loaded, {failed} failed")
+        safe_print(f"[THUMBNAILS] Worker done: {loaded} loaded, {failed} failed, "
+                   f"queue size now={self.thumbnail_queue.qsize()}")
 
     def check_thumbnail_queue(self, generation):
-        if self.stop_search or generation != self.search_generation: 
-            safe_print(f"[THUMBNAILS] Queue check stopped")
+        import threading
+        safe_print(f"[QUEUE] check_thumbnail_queue called: gen={generation}, "
+                   f"current_gen={self.search_generation}, stop={self.stop_search}, "
+                   f"qsize={self.thumbnail_queue.qsize()}, thread={threading.current_thread().name}")
+        if self.stop_search or generation != self.search_generation:
+            safe_print(f"[QUEUE] Bailing: stop_search={self.stop_search}, "
+                       f"gen mismatch={generation}!={self.search_generation}")
             return
-        
+
         start_time = time.time()
         processed_this_cycle = 0
         while not self.thumbnail_queue.empty():
             try:
                 item = self.thumbnail_queue.get_nowait()
                 score, path, img, result_type, metadata = item
+                safe_print(f"[QUEUE] Displaying: {os.path.basename(path)}")
                 self.add_result_thumbnail(score, path, img, result_type, metadata)
                 processed_this_cycle += 1
-            except queue.Empty: break
-            
+            except queue.Empty:
+                break
+            except Exception as e:
+                import traceback
+                safe_print(f"[QUEUE] Error displaying thumbnail: {e}")
+                safe_print(traceback.format_exc())
+                break
+
             if time.time() - start_time > 0.1: break
-        
+
         done = self.thumbnail_count
-        
+
         if processed_this_cycle > 0:
-            safe_print(f"[THUMBNAILS] Displayed {done} results", end='\r')
+            safe_print(f"[QUEUE] Displayed {done} results this session")
         
         if not self.is_indexing:
             page_size = max(10, self.top_n_slider.value() * 10)
@@ -3038,15 +3069,20 @@ class ImageSearchApp(QMainWindow):
         self.page_nav_widget.setVisible(True)
 
     def add_result_thumbnail(self, score, path, pil_img, result_type="image", metadata=None):
-        if self.stop_search: return
+        import threading
+        safe_print(f"[ADD_THUMB] called for {os.path.basename(path)}, thread={threading.current_thread().name}")
+        if self.stop_search:
+            safe_print(f"[ADD_THUMB] Skipped (stop_search=True)")
+            return
         if metadata is None:
             metadata = {}
-        
+
         cols = max(1, getattr(self, "render_cols", 1))
         idx = self.thumbnail_count
         row, col = divmod(idx, cols)
         self.thumbnail_count += 1
-        
+        safe_print(f"[ADD_THUMB] Adding card at row={row}, col={col}, cols={cols}")
+
         card = ResultCard()
         card._image_path = path
         card._on_single_click = self.handle_single_click
@@ -3087,8 +3123,9 @@ class ImageSearchApp(QMainWindow):
             name = os.path.basename(path)[:25]
             text = f"{score:.3f}\n{name}"
         card.info_label.setText(text)
-        
+
         self.scroll_area._grid.addWidget(card, row, col)
+        safe_print(f"[ADD_THUMB] Card added to grid OK")
 
     def clear_results(self, keep_results=False):
         """Clear search results and free RAM from thumbnails"""
