@@ -3888,14 +3888,11 @@ class ImageSearchApp(QMainWindow):
 
 
     def handle_single_click(self, path, widget=None):
-        if self.click_timer.isActive():
-            self.click_timer.stop()
-        try:
-            self.click_timer.timeout.disconnect()
-        except:
-            pass
-        self.click_timer.timeout.connect(lambda: self.open_in_explorer(path))
-        self.click_timer.start(400)
+        """Single click toggles card selection only. Use double-click to open viewer."""
+        if widget is not None and hasattr(widget, "select_cb"):
+            new_state = not widget.select_cb.isChecked()
+            widget.select_cb.setChecked(new_state)
+            self.toggle_selection(path, new_state)
 
     def handle_double_click(self, path):
         self.click_timer.stop()
@@ -4054,6 +4051,9 @@ class ImageSearchApp(QMainWindow):
             menu.addAction("Deselect", lambda: self._set_card_selection_by_path(path, False))
         else:
             menu.addAction("Select", lambda: self._set_card_selection_by_path(path, True))
+        menu.addSeparator()
+        menu.addAction("Open in Viewer", lambda: self.open_image_viewer(path))
+        menu.addAction("Show in File Manager", lambda: self.open_in_explorer(path))
         menu.addSeparator()
         menu.addAction("Copy", self.export_selected)
         menu.addAction("Move", self.move_selected)
@@ -4478,15 +4478,15 @@ class ImageSearchApp(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Find Duplicates")
-        dlg.resize(420, 200)
-        dlg.setFixedSize(420, 200)
+        dlg.resize(440, 240)
+        dlg.setFixedSize(440, 240)
         layout = QVBoxLayout(dlg)
 
         layout.addWidget(QLabel("Similarity threshold for duplicate detection:"))
         layout.addWidget(QLabel("0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar"))
 
         thresh_slider = QSlider(Qt.Orientation.Horizontal)
-        thresh_slider.setRange(800, 999)
+        thresh_slider.setRange(700, 999)
         thresh_slider.setValue(970)
         thresh_label = QLabel("0.970")
         thresh_slider.valueChanged.connect(lambda v: thresh_label.setText(f"{v/1000.0:.3f}"))
@@ -4495,15 +4495,23 @@ class ImageSearchApp(QMainWindow):
         row.addWidget(thresh_label)
         layout.addLayout(row)
 
+        auto_cb = QCheckBox(
+            "Auto-adjust threshold if no matches found  "
+            "(lowers threshold by 0.01 each retry until a match is found)"
+        )
+        auto_cb.setChecked(False)
+        layout.addWidget(auto_cb)
+
         n_images = len(self.image_paths)
         layout.addWidget(QLabel(f"{n_images:,} images in index"))
 
         def start_scan():
             threshold = thresh_slider.value() / 1000.0
+            auto_adjust = auto_cb.isChecked()
             dlg.accept()
             self.update_status(f"Scanning for duplicates (threshold={threshold:.3f})...", "orange")
             self.progress.setRange(0, 0)
-            Thread(target=lambda: self._find_duplicates_worker(threshold), daemon=True).start()
+            Thread(target=lambda: self._find_duplicates_worker(threshold, auto_adjust), daemon=True).start()
 
         btn_frame = QHBoxLayout()
         scan_btn = QPushButton("Find Duplicates")
@@ -4516,68 +4524,91 @@ class ImageSearchApp(QMainWindow):
         layout.addLayout(btn_frame)
         dlg.exec()
 
-    def _find_duplicates_worker(self, threshold):
+    def _find_duplicates_worker(self, threshold, auto_adjust=False):
         """Find near-duplicate image groups using embedding cosine similarity."""
         try:
             embeddings = self.image_embeddings
             n = len(self.image_paths)
-            safe_print(f"[DUPES] Scanning {n:,} images, threshold={threshold:.3f}...")
+            MIN_THRESHOLD = 0.70
+            current_threshold = threshold
 
-            parent = list(range(n))
+            while True:
+                safe_print(f"[DUPES] Scanning {n:,} images, threshold={current_threshold:.3f}...")
 
-            def find(x):
-                while parent[x] != x:
-                    parent[x] = parent[parent[x]]
-                    x = parent[x]
-                return x
+                parent = list(range(n))
 
-            def union(x, y):
-                px, py = find(x), find(y)
-                if px != py:
-                    parent[px] = py
+                def find(x):
+                    while parent[x] != x:
+                        parent[x] = parent[parent[x]]
+                        x = parent[x]
+                    return x
 
-            chunk_size = 500
-            total_chunks = (n + chunk_size - 1) // chunk_size
-            pair_count = 0
+                def union(x, y):
+                    px, py = find(x), find(y)
+                    if px != py:
+                        parent[px] = py
 
-            for chunk_idx in range(total_chunks):
-                start = chunk_idx * chunk_size
-                end = min(start + chunk_size, n)
-                chunk = embeddings[start:end]
-                sims = chunk @ embeddings.T
+                chunk_size = 500
+                total_chunks = (n + chunk_size - 1) // chunk_size
+                pair_count = 0
 
-                rows, cols = np.where(sims >= threshold)
-                for r, c in zip(rows.tolist(), cols.tolist()):
-                    actual_r = start + r
-                    if actual_r < c:
-                        union(actual_r, c)
-                        pair_count += 1
+                for chunk_idx in range(total_chunks):
+                    start = chunk_idx * chunk_size
+                    end = min(start + chunk_size, n)
+                    chunk = embeddings[start:end]
+                    sims = chunk @ embeddings.T
 
-                pct = int((chunk_idx + 1) / total_chunks * 100)
-                self._safe_after(0, lambda p=pct: self.progress_label.setText(
-                    f"Scanning for duplicates... {p}%"))
+                    rows, cols = np.where(sims >= current_threshold)
+                    for r, c in zip(rows.tolist(), cols.tolist()):
+                        actual_r = start + r
+                        if actual_r < c:
+                            union(actual_r, c)
+                            pair_count += 1
 
-            groups = {}
-            for i in range(n):
-                root = find(i)
-                groups.setdefault(root, []).append(i)
+                    pct = int((chunk_idx + 1) / total_chunks * 100)
+                    t = current_threshold
+                    self._safe_after(0, lambda p=pct, th=t: self.progress_label.setText(
+                        f"Scanning for duplicates (threshold={th:.3f})... {p}%"))
 
-            dup_groups = [sorted(members) for members in groups.values() if len(members) >= 2]
-            dup_groups.sort(key=lambda g: len(g), reverse=True)
+                # Rebuild parent after loop (find() mutates parent in-place via path compression)
+                groups = {}
+                for i in range(n):
+                    root = find(i)
+                    groups.setdefault(root, []).append(i)
 
-            safe_print(f"[DUPES] Found {len(dup_groups)} groups ({pair_count} pairs)")
+                dup_groups = [sorted(members) for members in groups.values() if len(members) >= 2]
+                dup_groups.sort(key=lambda g: len(g), reverse=True)
+
+                safe_print(f"[DUPES] Found {len(dup_groups)} groups ({pair_count} pairs) "
+                           f"at threshold={current_threshold:.3f}")
+
+                if dup_groups:
+                    break  # success
+
+                # No matches — optionally retry at a lower threshold
+                next_threshold = round(current_threshold - 0.01, 3)
+                if auto_adjust and next_threshold >= MIN_THRESHOLD:
+                    safe_print(f"[DUPES] No matches; auto-adjusting to {next_threshold:.3f}...")
+                    current_threshold = next_threshold
+                    parent = list(range(n))  # reset union-find for next pass
+                    continue
+                else:
+                    break  # give up
 
             self._safe_after(0, lambda: self.progress.setRange(0, 100))
             self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.progress_label.setText(""))
 
             if not dup_groups:
+                min_tried = current_threshold
                 self._safe_after(0, lambda: self.update_status("No duplicates found", "green"))
-                self._safe_after(0, lambda: QMessageBox.information(
-                    self,
-                    "No Duplicates",
-                    f"No duplicate images found at threshold {threshold:.3f}.\n\n"
-                    f"Try lowering the threshold to find more similar images."))
+                msg = (f"No duplicate images found at threshold {threshold:.3f}.")
+                if auto_adjust:
+                    msg += f"\n\nAuto-adjust searched down to {min_tried:.3f} with no results."
+                else:
+                    msg += "\n\nTry lowering the threshold or enabling Auto-adjust."
+                self._safe_after(0, lambda m=msg: QMessageBox.information(
+                    self, "No Duplicates", m))
                 return
 
             # Pre-load PIL images in this background thread so the main thread
@@ -4609,7 +4640,8 @@ class ImageSearchApp(QMainWindow):
             total_redundant = sum(len(g) - 1 for g in dup_groups)
             self._safe_after(0, lambda: self.update_status(
                 f"Found {len(dup_groups)} duplicate groups ({total_redundant} redundant files)", ORANGE))
-            self._safe_after(0, lambda gd=group_data: self.open_duplicates_dialog(gd))
+            self._safe_after(0, lambda gd=group_data, th=current_threshold:
+                self.open_duplicates_dialog(gd, th))
 
         except Exception as e:
             safe_print(f"[DUPES] Error: {e}")
@@ -4618,23 +4650,28 @@ class ImageSearchApp(QMainWindow):
             self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.update_status("Duplicate scan failed", "red"))
 
-    def open_duplicates_dialog(self, group_data):
-        """Display duplicate groups with checkboxes for selective deletion.
+    def open_duplicates_dialog(self, group_data, threshold=None):
+        """Display duplicate groups with checkboxes and multiple action options.
 
         group_data: list of groups, each group is a list of
             (abs_path, rel_path, pil_img_or_None) pre-loaded by the worker thread.
+        threshold: the similarity threshold that was used (for display).
         """
         dlg = QDialog(self)
         total_redundant = sum(len(g) - 1 for g in group_data)
-        dlg.setWindowTitle(f"Duplicate Finder - {len(group_data)} groups, {total_redundant} redundant files")
-        dlg.resize(920, 660)
+        thresh_str = f"  (threshold: {threshold:.3f})" if threshold is not None else ""
+        dlg.setWindowTitle(
+            f"Duplicate Finder — {len(group_data)} groups, {total_redundant} redundant files{thresh_str}")
+        dlg.resize(960, 680)
         layout = QVBoxLayout(dlg)
 
         # Header
-        hdr_lbl = QLabel(f"{len(group_data)} duplicate groups   -   {total_redundant} potentially redundant files")
-        hdr_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold;")
+        hdr_lbl = QLabel(
+            f"{len(group_data)} duplicate groups   —   {total_redundant} potentially redundant files{thresh_str}")
+        hdr_lbl.setStyleSheet("font-size: 10pt; font-weight: bold;")
         layout.addWidget(hdr_lbl)
-        layout.addWidget(QLabel("Checked items will be deleted. First image in each group is kept by default."))
+        layout.addWidget(QLabel(
+            "Tick images you want to act on. 'Keep First, Check Rest' is a quick shortcut per group."))
 
         # Scrollable area
         scroll = QScrollArea()
@@ -4644,7 +4681,9 @@ class ImageSearchApp(QMainWindow):
         scroll.setWidget(inner_widget)
         layout.addWidget(scroll, stretch=1)
 
-        delete_vars = {}  # abs_path -> QCheckBox
+        # path → (QCheckBox, group_index) so we can look up group later
+        action_vars = {}   # abs_path -> QCheckBox
+        path_to_group = {}  # abs_path -> grp_idx
 
         for grp_idx, group in enumerate(group_data):
             grp_frame = QFrame()
@@ -4652,18 +4691,18 @@ class ImageSearchApp(QMainWindow):
             grp_layout = QVBoxLayout(grp_frame)
 
             grp_hdr = QHBoxLayout()
-            grp_hdr_lbl = QLabel(f"Group {grp_idx + 1}  -  {len(group)} similar images")
+            grp_hdr_lbl = QLabel(f"Group {grp_idx + 1}  —  {len(group)} similar images")
             grp_hdr_lbl.setStyleSheet("font-weight: bold;")
             grp_hdr.addWidget(grp_hdr_lbl)
             grp_hdr.addStretch()
 
-            def _mark_group(g=group):
+            def _check_rest(g=group):
                 for k, (ap, _rp, _img) in enumerate(g):
-                    if ap in delete_vars:
-                        delete_vars[ap].setChecked(k > 0)
+                    if ap in action_vars:
+                        action_vars[ap].setChecked(k > 0)
 
-            keep_btn = QPushButton("Keep First, Delete Rest")
-            keep_btn.clicked.connect(_mark_group)
+            keep_btn = QPushButton("Keep First, Check Rest")
+            keep_btn.clicked.connect(_check_rest)
             grp_hdr.addWidget(keep_btn)
             grp_layout.addLayout(grp_hdr)
 
@@ -4697,18 +4736,19 @@ class ImageSearchApp(QMainWindow):
 
                 try:
                     fsize = os.path.getsize(abs_path)
-                    size_str = f"{fsize/1024:.0f} KB" if fsize < 1024*1024 else f"{fsize/1024/1024:.1f} MB"
+                    size_str = (f"{fsize/1024:.0f} KB" if fsize < 1024*1024
+                                else f"{fsize/1024/1024:.1f} MB")
                     size_lbl = QLabel(size_str)
                     size_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
                     cell_layout.addWidget(size_lbl)
                 except Exception:
                     pass
 
-                del_cb = QCheckBox("Delete")
-                del_cb.setChecked(k > 0)
-                del_cb.setStyleSheet(f"color: {DANGER};")
-                delete_vars[abs_path] = del_cb
-                cell_layout.addWidget(del_cb)
+                act_cb = QCheckBox("Act on")
+                act_cb.setChecked(k > 0)
+                action_vars[abs_path] = act_cb
+                path_to_group[abs_path] = grp_idx
+                cell_layout.addWidget(act_cb)
 
                 thumbs_row_layout.addWidget(cell)
 
@@ -4717,26 +4757,57 @@ class ImageSearchApp(QMainWindow):
 
         inner_layout.addStretch()
 
-        # Bottom bar
+        # ── Bottom action bar ─────────────────────────────────────────────────
         count_label = QLabel("")
         layout.addWidget(count_label)
 
         def _update_count():
-            n = sum(1 for cb in delete_vars.values() if cb.isChecked())
-            count_label.setText(f"{n} file(s) checked for deletion")
+            n = sum(1 for cb in action_vars.values() if cb.isChecked())
+            action = action_combo.currentText()
+            count_label.setText(f"{n} file(s) checked  —  action: {action}")
 
-        for cb in delete_vars.values():
+        action_row = QHBoxLayout()
+        action_row.addWidget(QLabel("Action:"))
+        action_combo = QComboBox()
+        action_combo.addItems([
+            "Delete (Recycle Bin)",
+            "Move to Folder…",
+            "Move into Group Subfolders…",
+        ])
+        action_combo.setMinimumWidth(240)
+        action_combo.currentIndexChanged.connect(lambda _: _update_count())
+        action_row.addWidget(action_combo)
+
+        apply_btn = QPushButton("Apply to Checked")
+        apply_btn.setProperty("class", "accent")
+        action_row.addWidget(apply_btn)
+        action_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        action_row.addWidget(close_btn)
+        layout.addLayout(action_row)
+
+        for cb in action_vars.values():
             cb.stateChanged.connect(lambda _: _update_count())
         _update_count()
 
-        def delete_checked():
-            to_del = [p for p, cb in delete_vars.items() if cb.isChecked() and os.path.exists(p)]
+        # ── Action implementations ────────────────────────────────────────────
+
+        def _checked_paths():
+            return [p for p, cb in action_vars.items() if cb.isChecked() and os.path.exists(p)]
+
+        def _do_delete():
+            to_del = _checked_paths()
             if not to_del:
-                QMessageBox.information(dlg, "Nothing to Delete", "No files are checked for deletion.")
+                QMessageBox.information(dlg, "Nothing Checked", "No files are checked.")
                 return
-            if QMessageBox.question(dlg, "Confirm Delete",
-                    f"Move {len(to_del)} file(s) to the Recycle Bin?\n\nFiles can be restored from the Recycle Bin.",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            if QMessageBox.question(
+                    dlg, "Confirm Delete",
+                    f"Move {len(to_del)} file(s) to the Recycle Bin?\n"
+                    "Files can be restored from the Recycle Bin.",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
                 return
             try:
                 from send2trash import send2trash
@@ -4755,7 +4826,7 @@ class ImageSearchApp(QMainWindow):
                 self._remove_paths_from_index(deleted)
                 self._remove_cards_from_ui(deleted)
                 for p in deleted:
-                    delete_vars.pop(p, None)
+                    action_vars.pop(p, None)
                 _update_count()
             if errors:
                 QMessageBox.critical(dlg, "Errors", "\n".join(errors[:5]))
@@ -4763,16 +4834,86 @@ class ImageSearchApp(QMainWindow):
                 QMessageBox.information(dlg, "Done",
                     f"Moved {len(deleted)} file(s) to Recycle Bin.")
 
-        bottom_row = QHBoxLayout()
-        del_btn = QPushButton("Delete Checked Files")
-        del_btn.setProperty("class", "danger")
-        del_btn.clicked.connect(delete_checked)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-        bottom_row.addWidget(del_btn)
-        bottom_row.addStretch()
-        bottom_row.addWidget(close_btn)
-        layout.addLayout(bottom_row)
+        def _do_move_to_folder():
+            to_move = _checked_paths()
+            if not to_move:
+                QMessageBox.information(dlg, "Nothing Checked", "No files are checked.")
+                return
+            dest = QFileDialog.getExistingDirectory(
+                dlg, "Select Destination Folder", self.folder or "")
+            if not dest:
+                return
+            moved, errors = [], []
+            for p in to_move:
+                target = os.path.join(dest, os.path.basename(p))
+                # Avoid collision
+                if os.path.exists(target):
+                    base, ext = os.path.splitext(os.path.basename(p))
+                    target = os.path.join(dest, f"{base}_dup{ext}")
+                try:
+                    import shutil as _shutil
+                    _shutil.move(p, target)
+                    moved.append(p)
+                except Exception as e:
+                    errors.append(f"{os.path.basename(p)}: {e}")
+            if moved:
+                self._remove_paths_from_index(moved)
+                self._remove_cards_from_ui(moved)
+                for p in moved:
+                    action_vars.pop(p, None)
+                _update_count()
+            if errors:
+                QMessageBox.critical(dlg, "Errors", "\n".join(errors[:5]))
+            if moved:
+                QMessageBox.information(dlg, "Done",
+                    f"Moved {len(moved)} file(s) to:\n{dest}")
+
+        def _do_move_to_group_subfolders():
+            to_move = _checked_paths()
+            if not to_move:
+                QMessageBox.information(dlg, "Nothing Checked", "No files are checked.")
+                return
+            dest_root = QFileDialog.getExistingDirectory(
+                dlg, "Select Root Folder for Group Subfolders", self.folder or "")
+            if not dest_root:
+                return
+            import shutil as _shutil
+            moved, errors = [], []
+            for p in to_move:
+                grp_idx = path_to_group.get(p, 0)
+                grp_folder = os.path.join(dest_root, f"Group_{grp_idx + 1:03d}")
+                os.makedirs(grp_folder, exist_ok=True)
+                target = os.path.join(grp_folder, os.path.basename(p))
+                if os.path.exists(target):
+                    base, ext = os.path.splitext(os.path.basename(p))
+                    target = os.path.join(grp_folder, f"{base}_dup{ext}")
+                try:
+                    _shutil.move(p, target)
+                    moved.append(p)
+                except Exception as e:
+                    errors.append(f"{os.path.basename(p)}: {e}")
+            if moved:
+                self._remove_paths_from_index(moved)
+                self._remove_cards_from_ui(moved)
+                for p in moved:
+                    action_vars.pop(p, None)
+                _update_count()
+            if errors:
+                QMessageBox.critical(dlg, "Errors", "\n".join(errors[:5]))
+            if moved:
+                QMessageBox.information(dlg, "Done",
+                    f"Moved {len(moved)} file(s) into group subfolders under:\n{dest_root}")
+
+        def _apply():
+            idx = action_combo.currentIndex()
+            if idx == 0:
+                _do_delete()
+            elif idx == 1:
+                _do_move_to_folder()
+            elif idx == 2:
+                _do_move_to_group_subfolders()
+
+        apply_btn.clicked.connect(_apply)
         dlg.exec()
 
 
