@@ -57,12 +57,14 @@ def get_system_vram():
     except Exception:
         pass
 
-    # Method 2: Windows WMIC (AMD/NVIDIA on Windows)
+    # Method 2: Windows PowerShell CimInstance (works on Win10/11, replaces deprecated wmic)
     if os.name == 'nt':
         try:
-            cmd = 'wmic path win32_VideoController get AdapterRAM'
-            output = subprocess.check_output(cmd, shell=True).decode('utf-8', errors='ignore')
-            values = [int(s) for s in re.findall(r'\d+', output)]
+            cmd = ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                   'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty AdapterRAM']
+            output = subprocess.check_output(cmd, stderr=subprocess.DEVNULL,
+                                             creationflags=0x08000000).decode('utf-8', errors='ignore')
+            values = [int(s) for s in re.findall(r'\d+', output) if int(s) > 1_000_000]
             if values:
                 return max(values)
         except Exception:
@@ -1320,9 +1322,25 @@ class ImageSearchApp(QMainWindow):
         except Exception as e:
             safe_print(f"[ERROR] {e}")
             err_msg = str(e)
+            # Detect CUDA DLL init failure (WinError 1114) and give actionable guidance
+            if "1114" in err_msg or "DLL" in err_msg or "c10" in err_msg:
+                hint = (
+                    "PyTorch CUDA DLLs failed to load.\n\n"
+                    "Common fixes:\n"
+                    "1. Install Visual C++ Redistributable 2022:\n"
+                    "   https://aka.ms/vs/17/release/vc_redist.x64.exe\n\n"
+                    "2. Reinstall PyTorch matching your CUDA version, e.g.:\n"
+                    "   pip install torch --index-url https://download.pytorch.org/whl/cu124\n\n"
+                    "3. Or install CPU-only PyTorch:\n"
+                    "   pip install torch --index-url https://download.pytorch.org/whl/cpu\n\n"
+                    f"Original error:\n{err_msg}"
+                )
+                display_msg = hint
+            else:
+                display_msg = f"Failed to load model\n{err_msg}"
             QTimer.singleShot(0, lambda: self.update_status("Load Failed", "red"))
             QTimer.singleShot(0, lambda: self.device_label.setText("Load Failed"))
-            QTimer.singleShot(0, lambda: QMessageBox.critical(self, "Error", f"Failed to load model\n{err_msg}"))
+            QTimer.singleShot(0, lambda m=display_msg: QMessageBox.critical(self, "Error", m))
         self.model_loading = False
 
     # ---- Action handlers ----
