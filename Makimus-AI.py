@@ -363,6 +363,7 @@ DARK_QSS = f"""
     QMenu {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; }}
     QMenu::item:selected {{ background-color: {ACCENT}; }}
     QDialog {{ background-color: {BG}; }}
+    QToolTip {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; padding: 4px; }}
 """
 
 def get_safe_path(path):
