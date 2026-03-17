@@ -46,7 +46,8 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon)
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal)
+    Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal,
+    QFileSystemWatcher)
 
 # Prevent PIL from crashing on legitimately large images (scanned maps, panoramas, etc.)
 # Files that truly cannot be decoded still get caught by the try/except in open_image()
@@ -1549,6 +1550,19 @@ class ImageSearchApp(QMainWindow):
         # Failed file tracking — populated during indexing, written to log at end of run
         self._failed_images = []   # list of (abs_path, reason)
         self._failed_videos = []   # list of (abs_path, reason)
+        self._last_failed_images = []   # snapshot of failures from last completed run
+        self._last_failed_videos = []   # snapshot of failures from last completed run
+
+        # Hybrid search anchor image embedding
+        self._anchor_embed = None   # numpy array (D,) if anchor set
+        self._anchor_path = None    # str path for display
+
+        # File-system watcher for auto-incremental index
+        self._fs_watcher = QFileSystemWatcher()
+        self._fs_debounce_timer = QTimer()
+        self._fs_debounce_timer.setSingleShot(True)
+        self._fs_debounce_timer.timeout.connect(self._trigger_auto_refresh)
+        self._fs_watcher.directoryChanged.connect(self._on_folder_changed)
 
         self.clip_model = None
         self.model_loading = False
@@ -1741,6 +1755,14 @@ class ImageSearchApp(QMainWindow):
         btn_hf_token.clicked.connect(self.set_hf_token)
         toolbar_layout.addWidget(btn_hf_token)
 
+        self.auto_update_cb = QCheckBox("Auto-update")
+        self.auto_update_cb.setToolTip(
+            "Watch the indexed folder for new files and automatically refresh the index when changes are detected."
+        )
+        self.auto_update_cb.setChecked(False)
+        self.auto_update_cb.toggled.connect(self._on_auto_update_toggled)
+        toolbar_layout.addWidget(self.auto_update_cb)
+
         btn_info = QPushButton("?")
         btn_info.setFixedWidth(30)
         btn_info.clicked.connect(self.show_index_info)
@@ -1773,6 +1795,47 @@ class ImageSearchApp(QMainWindow):
         btn_image = QPushButton("Image")
         btn_image.clicked.connect(self.on_image_click)
         search_layout.addWidget(btn_image)
+
+        btn_paste = QPushButton("Paste")
+        btn_paste.setToolTip("Search by image from clipboard (Ctrl+V)")
+        btn_paste.clicked.connect(self._paste_clipboard_search)
+        search_layout.addWidget(btn_paste)
+
+        self.btn_anchor = QPushButton("Anchor")
+        self.btn_anchor.setToolTip(
+            "Set a reference image to blend with text search.\n"
+            "Use the weight slider to control text vs. image balance."
+        )
+        self.btn_anchor.clicked.connect(self._set_anchor_image)
+        search_layout.addWidget(self.btn_anchor)
+
+        self.anchor_label = QLabel("")
+        self.anchor_label.setStyleSheet(f"color: #aaa; font-size: 9pt;")
+        self.anchor_label.setVisible(False)
+        search_layout.addWidget(self.anchor_label)
+
+        self.btn_clear_anchor = QPushButton("✕")
+        self.btn_clear_anchor.setFixedWidth(26)
+        self.btn_clear_anchor.setToolTip("Clear anchor image")
+        self.btn_clear_anchor.clicked.connect(self._clear_anchor)
+        self.btn_clear_anchor.setVisible(False)
+        search_layout.addWidget(self.btn_clear_anchor)
+
+        search_layout.addWidget(QLabel("Blend:"))
+        self.hybrid_slider = QSlider(Qt.Orientation.Horizontal)
+        self.hybrid_slider.setRange(0, 100)
+        self.hybrid_slider.setValue(0)
+        self.hybrid_slider.setFixedWidth(90)
+        self.hybrid_slider.setToolTip("0 = text only, 100 = anchor image only")
+        self.hybrid_slider.setVisible(False)
+        search_layout.addWidget(self.hybrid_slider)
+
+        self.hybrid_val_label = QLabel("0%")
+        self.hybrid_val_label.setStyleSheet(f"color: #aaa; font-size: 9pt;")
+        self.hybrid_val_label.setVisible(False)
+        self.hybrid_slider.valueChanged.connect(
+            lambda v: self.hybrid_val_label.setText(f"{v}%"))
+        search_layout.addWidget(self.hybrid_val_label)
 
         btn_history = QPushButton("History")
         btn_history.clicked.connect(self.on_history_click)
@@ -1857,6 +1920,19 @@ class ImageSearchApp(QMainWindow):
         self.dedup_video_cb = QCheckBox("Best frame/video")
         self.dedup_video_cb.setChecked(False)
         controls_layout.addWidget(self.dedup_video_cb)
+
+        sep3 = QFrame()
+        sep3.setFrameShape(QFrame.Shape.VLine)
+        sep3.setStyleSheet(f"color: {BORDER};")
+        controls_layout.addWidget(sep3)
+
+        controls_layout.addWidget(QLabel("Sort:"))
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(["Score ↓", "Date (newest)", "Date (oldest)", "Name A→Z", "Name Z→A", "Size ↓"])
+        self.sort_combo.setFixedWidth(130)
+        self.sort_combo.setToolTip("Re-sort the current search results")
+        self.sort_combo.currentIndexChanged.connect(self._resort_and_redisplay)
+        controls_layout.addWidget(self.sort_combo)
 
         main_layout.addWidget(controls_widget)
 
@@ -2128,6 +2204,219 @@ class ImageSearchApp(QMainWindow):
             label = MODEL_REGISTRY[self.active_model_key]["label"]
             self.query_entry.setPlaceholderText(
                 f"{label} is vision-only — use Image search")
+
+    # ---- Feature: Clipboard paste image search ----
+
+    def _paste_clipboard_search(self):
+        """Search by image currently on the clipboard (Ctrl+V shortcut)."""
+        if self.clip_model is None:
+            QMessageBox.warning(self, "Wait", "Model is still loading, please wait.")
+            return
+        if not self.is_safe_to_act(action_name="image search"):
+            return
+        if not self.folder:
+            QMessageBox.warning(self, "No Folder", "Please select a folder first.")
+            return
+        if self.image_embeddings is None and self.video_embeddings is None:
+            QMessageBox.warning(self, "Not Indexed", "Please index a folder first.")
+            return
+        clipboard = QApplication.clipboard()
+        mime = clipboard.mimeData()
+        if mime.hasImage():
+            qimg = clipboard.image()
+            if qimg.isNull():
+                QMessageBox.warning(self, "Empty Clipboard", "No image found on clipboard.")
+                return
+            # Convert QImage → PIL Image via RGB888 bytes
+            qimg = qimg.convertToFormat(QImage.Format.Format_RGB888)
+            w, h = qimg.width(), qimg.height()
+            ptr = qimg.bits()
+            ptr.setsize(w * h * 3)
+            pil_img = Image.frombytes("RGB", (w, h), bytes(ptr))
+            self.cancel_search(clear_ui=True)
+            gen = self.search_generation + 1
+            self.search_thread = Thread(
+                target=lambda: self._image_search_pil(pil_img, gen, label="clipboard"),
+                daemon=True,
+            )
+            self.search_thread.start()
+        elif mime.hasUrls():
+            # Clipboard has a file path — treat as image file
+            for url in mime.urls():
+                path = url.toLocalFile()
+                if path and os.path.isfile(path):
+                    self._on_drop_image(path)
+                    return
+            QMessageBox.warning(self, "No Image", "No image or image file found on clipboard.")
+        else:
+            QMessageBox.warning(self, "No Image",
+                "No image found on clipboard.\n\nCopy an image first, then click Paste.")
+
+    def keyPressEvent(self, event):
+        if event.matches(QKeySequence.StandardKey.Paste):
+            self._paste_clipboard_search()
+        else:
+            super().keyPressEvent(event)
+
+    # ---- Feature: Hybrid text + image search ----
+
+    def _set_anchor_image(self):
+        """Open a file to use as the anchor (reference) image for hybrid search."""
+        if self.clip_model is None:
+            QMessageBox.warning(self, "Wait", "Model is still loading.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Anchor Image", "",
+            "Images (*.jpg *.jpeg *.png *.webp *.bmp *.gif)"
+        )
+        if not path:
+            return
+        try:
+            img = open_image(path)
+            if img is None:
+                raise ValueError("Could not open image")
+            feats = self.clip_model.encode_image_batch([img])
+            self._anchor_embed = feats[0]
+            self._anchor_path = path
+            name = os.path.basename(path)
+            self.anchor_label.setText(name)
+            self.anchor_label.setVisible(True)
+            self.btn_clear_anchor.setVisible(True)
+            self.hybrid_slider.setVisible(True)
+            self.hybrid_val_label.setVisible(True)
+            if self.hybrid_slider.value() == 0:
+                self.hybrid_slider.setValue(50)
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not encode anchor image: {e}")
+
+    def _clear_anchor(self):
+        """Remove the hybrid search anchor."""
+        self._anchor_embed = None
+        self._anchor_path = None
+        self.anchor_label.setText("")
+        self.anchor_label.setVisible(False)
+        self.btn_clear_anchor.setVisible(False)
+        self.hybrid_slider.setVisible(False)
+        self.hybrid_val_label.setVisible(False)
+        self.hybrid_slider.setValue(0)
+
+    # ---- Feature: Post-search sort ----
+
+    def _resort_and_redisplay(self):
+        """Re-sort all_search_results by the selected sort criterion and show first page."""
+        if not self.all_search_results or self.is_searching:
+            return
+        idx = self.sort_combo.currentIndex()
+        results = list(self.all_search_results)
+        if idx == 0:  # Score ↓
+            results.sort(key=lambda x: x[0], reverse=True)
+        elif idx == 1:  # Date newest
+            def _mtime(item):
+                try:
+                    return os.path.getmtime(item[1])
+                except Exception:
+                    return 0.0
+            results.sort(key=_mtime, reverse=True)
+        elif idx == 2:  # Date oldest
+            def _mtime_asc(item):
+                try:
+                    return os.path.getmtime(item[1])
+                except Exception:
+                    return 0.0
+            results.sort(key=_mtime_asc)
+        elif idx == 3:  # Name A→Z
+            results.sort(key=lambda x: os.path.basename(x[1]).lower())
+        elif idx == 4:  # Name Z→A
+            results.sort(key=lambda x: os.path.basename(x[1]).lower(), reverse=True)
+        elif idx == 5:  # Size ↓
+            def _size(item):
+                try:
+                    return os.path.getsize(item[1])
+                except Exception:
+                    return 0
+            results.sort(key=_size, reverse=True)
+
+        saved_total = self.total_found
+        self.selected_images.clear()
+        self.clear_results(keep_results=True)
+        self.all_search_results = results
+        self.total_found = saved_total
+        page_size = max(10, self.top_n_slider.value() * 10)
+        first_batch = results[:page_size]
+        self.show_more_offset = len(first_batch)
+        if not first_batch:
+            return
+        self.stop_search = False
+        gen = self.search_generation
+        t = Thread(target=self.load_thumbnails_worker, args=(first_batch, gen), daemon=True)
+        self._thumbnail_worker_thread = t
+        t.start()
+        QTimer.singleShot(10, lambda: self.check_thumbnail_queue(gen))
+
+    # ---- Feature: Auto-incremental index via file-system watcher ----
+
+    def _on_auto_update_toggled(self, checked):
+        """Enable or disable the file-system watcher for the current folder."""
+        if checked and self.folder:
+            self._fs_watcher.addPath(self.folder)
+            safe_print(f"[WATCHER] Watching: {self.folder}")
+        else:
+            paths = self._fs_watcher.directories()
+            if paths:
+                self._fs_watcher.removePaths(paths)
+            self._fs_debounce_timer.stop()
+            safe_print("[WATCHER] Stopped")
+
+    def _on_folder_changed(self, path):
+        """Called by QFileSystemWatcher when the watched folder emits directoryChanged."""
+        if not self.auto_update_cb.isChecked():
+            return
+        safe_print(f"[WATCHER] Change detected in: {path} — debouncing 5 s")
+        self._fs_debounce_timer.start(5000)  # 5-second debounce
+
+    def _trigger_auto_refresh(self):
+        """Debounced slot — start a refresh index if idle."""
+        if not self.folder or self.is_indexing or self.is_searching:
+            safe_print("[WATCHER] Auto-refresh skipped (busy or no folder)")
+            return
+        if self.clip_model is None:
+            safe_print("[WATCHER] Auto-refresh skipped (model not loaded)")
+            return
+        safe_print("[WATCHER] Auto-refresh triggered")
+        self._safe_after(0, lambda: self.start_indexing(mode="refresh"))
+
+    # ---- Feature: Failed / skipped files report ----
+
+    def _show_failed_files_dialog(self):
+        """Show a dialog listing files that failed to index in the last run."""
+        combined = (
+            [("image", p, r) for p, r in self._last_failed_images] +
+            [("video", p, r) for p, r in self._last_failed_videos]
+        )
+        if not combined:
+            QMessageBox.information(self, "No Failures", "No files were skipped in the last index run.")
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"Skipped Files — {len(combined)} total")
+        dlg.resize(680, 420)
+        layout = QVBoxLayout(dlg)
+        lbl = QLabel(
+            f"<b>{len(combined)} file(s)</b> could not be indexed in the last run. "
+            "These have also been logged to <i>makimus_skipped_images.txt</i> / "
+            "<i>makimus_skipped_videos.txt</i> in your folder."
+        )
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+        lst = QListWidget()
+        lst.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        for kind, path, reason in combined:
+            icon = "🖼" if kind == "image" else "🎬"
+            lst.addItem(f"{icon}  {os.path.basename(path)}  —  {reason}\n    {path}")
+        layout.addWidget(lst)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        layout.addWidget(btn_close)
+        dlg.exec()
 
     def set_hf_token(self):
         """Let the user enter their HuggingFace token and save it to the app config."""
@@ -2413,6 +2702,14 @@ class ImageSearchApp(QMainWindow):
         self.load_search_history()
         self._load_face_data()
         safe_print(f"\n{'='*60}\n[FOLDER] {folder}")
+
+        # Update file-system watcher to track the new folder
+        existing_watched = self._fs_watcher.directories()
+        if existing_watched:
+            self._fs_watcher.removePaths(existing_watched)
+        if self.auto_update_cb.isChecked():
+            self._fs_watcher.addPath(folder)
+            safe_print(f"[WATCHER] Now watching: {folder}")
         
         cache_files = self.get_cache_filename()
         found_cache = None
@@ -3278,6 +3575,7 @@ class ImageSearchApp(QMainWindow):
         count = len(self.image_paths)
 
         self._write_failed_log(self._failed_images, "makimus_skipped_images.txt")
+        self._last_failed_images = list(self._failed_images)
         self._failed_images = []
 
         self.is_indexing = False
@@ -3333,7 +3631,19 @@ class ImageSearchApp(QMainWindow):
                 self._safe_after(200, lambda: self.start_indexing(mode="video_refresh"))
                 return
             self._safe_after(0, lambda: self.update_status("Indexing Complete", "green"))
-            self._safe_after(0, lambda c=count: self.show_info_bar(f"Index complete — {c:,} images indexed."))
+            def _show_complete_bar(c=count):
+                n_failed = len(self._last_failed_images)
+                if n_failed:
+                    msg = (f"Index complete — {c:,} images indexed. "
+                           f"<a href='show_failed' style='color:#f5a623;'>"
+                           f"{n_failed} file(s) skipped — click to view</a>")
+                    self.info_bar.setOpenExternalLinks(False)
+                    self.info_bar.linkActivated.connect(
+                        lambda _: self._show_failed_files_dialog())
+                    self.show_info_bar(msg)
+                else:
+                    self.show_info_bar(f"Index complete — {c:,} images indexed.")
+            self._safe_after(0, _show_complete_bar)
             try:
                 query = self.query_entry.text().strip()
                 if query:
@@ -3347,6 +3657,7 @@ class ImageSearchApp(QMainWindow):
         n_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
 
         self._write_failed_log(self._failed_videos, "makimus_skipped_videos.txt")
+        self._last_failed_videos = list(self._failed_videos)
         self._failed_videos = []
 
         self.is_indexing = False
@@ -3385,9 +3696,19 @@ class ImageSearchApp(QMainWindow):
                 self._safe_after(100, action)
         else:
             self._safe_after(0, lambda: self.update_status("Video indexing complete", "green"))
-            self._safe_after(0, lambda v=n_videos, f=n_frames: self.show_info_bar(
-                f"Video index complete — {v:,} videos | {f:,} frames indexed."
-            ))
+            def _show_video_complete_bar(v=n_videos, f=n_frames):
+                n_failed = len(self._last_failed_videos)
+                if n_failed:
+                    msg = (f"Video index complete — {v:,} videos | {f:,} frames indexed. "
+                           f"<a href='show_failed' style='color:#f5a623;'>"
+                           f"{n_failed} video(s) skipped — click to view</a>")
+                    self.info_bar.setOpenExternalLinks(False)
+                    self.info_bar.linkActivated.connect(
+                        lambda _: self._show_failed_files_dialog())
+                    self.show_info_bar(msg)
+                else:
+                    self.show_info_bar(f"Video index complete — {v:,} videos | {f:,} frames indexed.")
+            self._safe_after(0, _show_video_complete_bar)
             try:
                 query = self.query_entry.text().strip()
                 if query:
@@ -3598,6 +3919,17 @@ class ImageSearchApp(QMainWindow):
                 self.is_searching = False
                 return
 
+            # Hybrid search: blend text embedding with anchor image embedding
+            anchor = getattr(self, '_anchor_embed', None)
+            if anchor is not None:
+                w = self.hybrid_slider.value() / 100.0
+                blended = (1.0 - w) * text_embed.flatten() + w * anchor.flatten()
+                norm = np.linalg.norm(blended)
+                if norm > 1e-8:
+                    blended = blended / norm
+                text_embed = blended.reshape(text_embed.shape)
+                safe_print(f"[SEARCH] Hybrid blend: text={1-w:.0%}, anchor={w:.0%}")
+
             if self.stop_search or generation != self.search_generation:
                 safe_print("[SEARCH] Cancelled after text encoding")
                 return
@@ -3697,6 +4029,64 @@ class ImageSearchApp(QMainWindow):
         gen = self.search_generation + 1
         self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
         self.search_thread.start()
+
+    def _image_search_pil(self, pil_img, generation, label="image"):
+        """Like _image_search but works directly from a PIL Image (e.g. from clipboard)."""
+        if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
+            if not getattr(self.clip_model, 'onnx_disabled', False):
+                try:
+                    self.clip_model._create_onnx_session()
+                except Exception:
+                    pass
+        self.search_generation = generation
+        self.is_searching = True
+        self.stop_search = False
+        self.thumbnail_count = 0
+        self._safe_after(0, self.clear_results)
+        vp_width = self.scroll_area.viewport().width()
+        cw = max(vp_width, CELL_WIDTH)
+        self.render_cols = max(1, cw // CELL_WIDTH)
+        self._safe_after(0, lambda: self.update_status(f"Searching by {label}...", "orange"))
+        try:
+            features = self.clip_model.encode_image_batch([pil_img])
+            emb = features[0]
+            show_images = self.show_images_cb.isChecked()
+            show_videos = self.show_videos_cb.isChecked()
+            all_results = []
+            min_score = self.score_slider.value() / 100.0
+            if show_images and self.image_embeddings is not None:
+                sims_img = (self.image_embeddings @ emb).flatten()
+                above = np.where(sims_img >= min_score)[0]
+                for i in above:
+                    rel_path = self.image_paths[i]
+                    if not self._is_excluded(rel_path):
+                        abs_path = os.path.join(self.folder, rel_path)
+                        all_results.append((float(sims_img[i]), abs_path, "image", {}))
+            if show_videos and self.video_embeddings is not None:
+                sims_vid = (self.video_embeddings @ emb).flatten()
+                above_v = np.where(sims_vid >= min_score)[0]
+                for i in above_v:
+                    rel_vid_path, timestamp = self.video_paths[i]
+                    if not self._is_excluded(rel_vid_path):
+                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                        all_results.append((float(sims_vid[i]), abs_vid_path, "video", {"timestamp": timestamp}))
+            if all_results:
+                if self.dedup_video_cb.isChecked():
+                    all_results = self._deduplicate_video_results(all_results)
+                all_results.sort(key=lambda x: x[0], reverse=True)
+                self.all_search_results = all_results
+                self.total_found = len(all_results)
+                self.show_more_offset = 0
+                initial_n = max(10, self.top_n_slider.value() * 10)
+                first_batch = all_results[:initial_n]
+                self.show_more_offset = len(first_batch)
+                self.start_thumbnail_loader(first_batch, generation)
+            else:
+                self._safe_after(0, lambda: self.update_status("No matches", "green"))
+                self.is_searching = False
+        except Exception as e:
+            safe_print(f"[IMAGE SEARCH PIL ERROR] {e}")
+            self.is_searching = False
 
     def _image_search(self, path, generation):
         if self.clip_model and not getattr(self.clip_model, 'use_onnx_visual', False):
