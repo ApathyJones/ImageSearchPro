@@ -4800,6 +4800,22 @@ class ImageSearchApp(QMainWindow):
         action_row.addWidget(apply_btn)
         action_row.addStretch()
 
+        def _select_all():
+            for cb in action_vars.values():
+                cb.setChecked(True)
+
+        def _select_none():
+            for cb in action_vars.values():
+                cb.setChecked(False)
+
+        sel_all_btn = QPushButton("Select All")
+        sel_all_btn.clicked.connect(_select_all)
+        action_row.addWidget(sel_all_btn)
+
+        sel_none_btn = QPushButton("Select None")
+        sel_none_btn.clicked.connect(_select_none)
+        action_row.addWidget(sel_none_btn)
+
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dlg.accept)
         action_row.addWidget(close_btn)
