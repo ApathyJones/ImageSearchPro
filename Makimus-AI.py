@@ -3872,10 +3872,36 @@ class ImageSearchApp(QMainWindow):
                     f"Try lowering the threshold to find more similar images."))
                 return
 
+            # Pre-load PIL images in this background thread so the main thread
+            # doesn't block on disk I/O when building the dialog.
+            safe_print(f"[DUPES] Pre-loading thumbnails for dialog...")
+            group_data = []
+            for group in dup_groups:
+                members = []
+                for img_idx in group:
+                    rel_path = self.image_paths[img_idx]
+                    abs_path = os.path.join(self.folder, rel_path)
+                    pil_img = None
+                    try:
+                        if rel_path.lower().endswith(RAW_EXTS):
+                            import rawpy
+                            with rawpy.imread(abs_path) as raw:
+                                rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
+                            pil_img = Image.fromarray(rgb)
+                        else:
+                            safe_p = get_safe_path(abs_path)
+                            pil_img = Image.open(safe_p)
+                            pil_img.load()
+                        pil_img.thumbnail((150, 150))
+                    except Exception:
+                        pil_img = None
+                    members.append((abs_path, rel_path, pil_img))
+                group_data.append(members)
+
             total_redundant = sum(len(g) - 1 for g in dup_groups)
             self._safe_after(0, lambda: self.update_status(
                 f"Found {len(dup_groups)} duplicate groups ({total_redundant} redundant files)", ORANGE))
-            self._safe_after(0, lambda: self.open_duplicates_dialog(dup_groups))
+            self._safe_after(0, lambda gd=group_data: self.open_duplicates_dialog(gd))
 
         except Exception as e:
             safe_print(f"[DUPES] Error: {e}")
@@ -3884,16 +3910,20 @@ class ImageSearchApp(QMainWindow):
             self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.update_status("Duplicate scan failed", "red"))
 
-    def open_duplicates_dialog(self, dup_groups):
-        """Display duplicate groups with checkboxes for selective deletion."""
+    def open_duplicates_dialog(self, group_data):
+        """Display duplicate groups with checkboxes for selective deletion.
+
+        group_data: list of groups, each group is a list of
+            (abs_path, rel_path, pil_img_or_None) pre-loaded by the worker thread.
+        """
         dlg = QDialog(self)
-        total_redundant = sum(len(g) - 1 for g in dup_groups)
-        dlg.setWindowTitle(f"Duplicate Finder - {len(dup_groups)} groups, {total_redundant} redundant files")
+        total_redundant = sum(len(g) - 1 for g in group_data)
+        dlg.setWindowTitle(f"Duplicate Finder - {len(group_data)} groups, {total_redundant} redundant files")
         dlg.resize(920, 660)
         layout = QVBoxLayout(dlg)
 
         # Header
-        hdr_lbl = QLabel(f"{len(dup_groups)} duplicate groups   -   {total_redundant} potentially redundant files")
+        hdr_lbl = QLabel(f"{len(group_data)} duplicate groups   -   {total_redundant} potentially redundant files")
         hdr_lbl.setStyleSheet(f"font-size: 10pt; font-weight: bold;")
         layout.addWidget(hdr_lbl)
         layout.addWidget(QLabel("Checked items will be deleted. First image in each group is kept by default."))
@@ -3907,9 +3937,8 @@ class ImageSearchApp(QMainWindow):
         layout.addWidget(scroll, stretch=1)
 
         delete_vars = {}  # abs_path -> QCheckBox
-        THUMB_W, THUMB_H = 150, 150
 
-        for grp_idx, group in enumerate(dup_groups):
+        for grp_idx, group in enumerate(group_data):
             grp_frame = QFrame()
             grp_frame.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
             grp_layout = QVBoxLayout(grp_frame)
@@ -3921,8 +3950,7 @@ class ImageSearchApp(QMainWindow):
             grp_hdr.addStretch()
 
             def _mark_group(g=group):
-                for k, i in enumerate(g):
-                    ap = os.path.join(self.folder, self.image_paths[i])
+                for k, (ap, _rp, _img) in enumerate(g):
                     if ap in delete_vars:
                         delete_vars[ap].setChecked(k > 0)
 
@@ -3935,31 +3963,18 @@ class ImageSearchApp(QMainWindow):
             thumbs_row_layout = QHBoxLayout(thumbs_row_widget)
             thumbs_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
-            for k, img_idx in enumerate(group):
-                rel_path = self.image_paths[img_idx]
-                abs_path = os.path.join(self.folder, rel_path)
-
+            for k, (abs_path, rel_path, pil_img) in enumerate(group):
                 cell = QWidget()
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-                try:
-                    if rel_path.lower().endswith(RAW_EXTS):
-                        import rawpy
-                        with rawpy.imread(abs_path) as raw:
-                            rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
-                        img = Image.fromarray(rgb)
-                    else:
-                        safe_p = get_safe_path(abs_path)
-                        img = Image.open(safe_p)
-                        img.load()
-                    img.thumbnail((THUMB_W, THUMB_H))
-                    pixmap = pil_to_pixmap(img)
+                if pil_img is not None:
+                    pixmap = pil_to_pixmap(pil_img)
                     img_lbl = QLabel()
                     img_lbl.setPixmap(pixmap)
                     img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                     cell_layout.addWidget(img_lbl)
-                except Exception:
+                else:
                     no_prev = QLabel("[no preview]")
                     no_prev.setFixedSize(150, 100)
                     cell_layout.addWidget(no_prev)
