@@ -18,9 +18,12 @@ import warnings
 from PIL import Image
 import numpy as np
 
-# On Windows, register torch's lib directory as a DLL search path so that
-# c10.dll and its CUDA dependencies (cublas, cudart, etc.) can be found when
-# torch is first imported.  This must happen before any `import torch` call.
+# On Windows, torch MUST be imported before PyQt6.  PyQt6 loads Qt DLLs that
+# corrupt the DLL resolution environment, causing c10.dll's DllMain to fail
+# (WinError 1114) when torch is imported afterward.  Importing torch first
+# (after registering its lib dir) avoids this ordering conflict.
+# The Qt platform plugin env vars get corrected later in main() before
+# QApplication() is created, so the reverse Qt-vs-torch conflict is also fixed.
 if os.name == 'nt':
     try:
         import importlib.util as _ilu
@@ -29,7 +32,7 @@ if os.name == 'nt':
             _torch_lib = os.path.join(os.path.dirname(_torch_spec.origin), 'lib')
             if os.path.isdir(_torch_lib):
                 os.add_dll_directory(_torch_lib)  # Python 3.8+ Windows API
-                os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+        import torch as _torch_preload  # noqa: F401 — side-effect: loads CUDA DLLs first
     except Exception:
         pass
 
