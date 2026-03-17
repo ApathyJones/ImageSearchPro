@@ -18,6 +18,21 @@ import warnings
 from PIL import Image
 import numpy as np
 
+# On Windows, register torch's lib directory as a DLL search path so that
+# c10.dll and its CUDA dependencies (cublas, cudart, etc.) can be found when
+# torch is first imported.  This must happen before any `import torch` call.
+if os.name == 'nt':
+    try:
+        import importlib.util as _ilu
+        _torch_spec = _ilu.find_spec('torch')
+        if _torch_spec and _torch_spec.origin:
+            _torch_lib = os.path.join(os.path.dirname(_torch_spec.origin), 'lib')
+            if os.path.isdir(_torch_lib):
+                os.add_dll_directory(_torch_lib)  # Python 3.8+ Windows API
+                os.environ['PATH'] = _torch_lib + os.pathsep + os.environ.get('PATH', '')
+    except Exception:
+        pass
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QLineEdit, QCheckBox, QSlider, QSpinBox, QScrollArea, QListWidget,
