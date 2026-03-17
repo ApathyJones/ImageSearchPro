@@ -46,7 +46,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence)
 from PyQt6.QtCore import (
-    Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent)
+    Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal)
 
 # Prevent PIL from crashing on legitimately large images (scanned maps, panoramas, etc.)
 # Files that truly cannot be decoded still get caught by the try/except in open_image()
@@ -897,11 +897,17 @@ class ResultsScrollArea(QScrollArea):
 
 
 class ImageSearchApp(QMainWindow):
+    # Used by _safe_after to marshal arbitrary callables to the main thread.
+    # Emitting from a background thread automatically uses a queued connection
+    # because self lives in the main thread.
+    _dispatch_signal = pyqtSignal(object)
+
     def __init__(self):
         super().__init__()
+        self._dispatch_signal.connect(self._dispatch_invoke)
         self.setWindowTitle("Makimus - AI Media Search")
         self.resize(1400, 900)
-        
+
         if os.name == 'nt':
             self.apply_dark_title_bar()
         
@@ -1290,19 +1296,35 @@ class ImageSearchApp(QMainWindow):
         self.progress.setValue(int(value))
         self.progress_label.setText(text)
 
+    def _dispatch_invoke(self, fn):
+        """Slot that receives callables from background threads via _dispatch_signal."""
+        try:
+            fn()
+        except Exception as e:
+            import traceback
+            safe_print(f"[DISPATCH ERROR] {e}\n{traceback.format_exc()}")
+
     def _safe_after(self, ms, func):
         """Schedule func on the main-thread event loop from any thread.
 
-        QTimer.singleShot(ms, callable) is NOT thread-safe in PyQt6.
-        The 3-argument form QTimer.singleShot(ms, context, callable) posts
-        the event to the context object's thread, making it safe to call
-        from background worker threads.
+        Uses _dispatch_signal (pyqtSignal) which Qt automatically delivers via
+        a queued connection when emitted from a non-main thread, marshalling
+        the call safely to the main thread's event loop.
+
+        For ms=0: emits directly.
+        For ms>0: emits a wrapper that schedules a QTimer on the main thread
+                  (2-arg QTimer.singleShot is safe when called from the main thread).
         """
         import threading
         safe_print(f"[SAFE_AFTER] scheduling {getattr(func, '__name__', repr(func)[:60])} "
                    f"in {ms}ms from thread={threading.current_thread().name}")
         try:
-            QTimer.singleShot(ms, self, func)
+            if ms <= 0:
+                self._dispatch_signal.emit(func)
+            else:
+                def _schedule():
+                    QTimer.singleShot(ms, func)
+                self._dispatch_signal.emit(_schedule)
         except Exception as e:
             safe_print(f"[SAFE_AFTER ERROR] {e}")
 
