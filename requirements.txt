@@ -1,17 +1,38 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
+
+# ── GUI ───────────────────────────────────────────────────────────────────────
+PyQt6>=6.5.0
+
+# ── Core numerics & image I/O ─────────────────────────────────────────────────
 Pillow==12.0.0
 numpy==2.2.6
-torch==2.10.0+cu128
-torchvision==0.25.0+cu128
-open_clip_torch==3.2.0
 rawpy==0.26.1
 opencv-python==4.13.0.92
-Send2Trash==2.1.0
-tkinterdnd2==0.4.3
 
-# Optional: AMD GPU acceleration on Windows (DirectML)
+# ── PyTorch (CUDA 12.8) ───────────────────────────────────────────────────────
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+
+# ── Vision models ─────────────────────────────────────────────────────────────
+open_clip_torch==3.2.0
+transformers>=4.56
+huggingface_hub>=0.24
+dinotool
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+psutil>=5.9
+scikit-learn>=1.3
+Send2Trash==2.1.0
+
+# ── Optional: NSFW detection (enables the NSFW scan button) ──────────────────
+# pip install nudenet
+
+# ── Optional: face search via InsightFace ────────────────────────────────────
+# pip install insightface onnxruntime
+
+# ── Optional: AMD GPU acceleration on Windows (DirectML) ─────────────────────
 # pip install torch-directml
 
-# Optional (legacy): ONNX GPU acceleration
-# Only useful on older NVIDIA GPUs. Also requires code changes inside Makimus-AI.py to enable.
-# onnxruntime-gpu==1.23.2
+# ── Optional (legacy): ONNX GPU acceleration ─────────────────────────────────
+# Only useful on older NVIDIA GPUs. Also requires code changes in Makimus-AI.py.
+# pip install onnxruntime-gpu==1.23.2
