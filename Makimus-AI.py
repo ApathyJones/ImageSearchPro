@@ -1095,43 +1095,54 @@ class DinoBackendModel:
             safe_print(f"[MODEL] NOTE: {dino_name} is a gated HuggingFace model.")
             safe_print(f"[MODEL]       If loading fails, run:  hf auth login")
 
-        # Load on CPU first so we can cast to fp16/bf16 before moving to GPU.
-        # AutoModel.from_pretrained (used by dinotool for DINOv3) defaults to
-        # float32, meaning a 7B model would need ~28 GB VRAM.  Casting to
-        # fp16/bf16 on CPU first halves that to ~14 GB before the GPU transfer.
-        safe_print(f"[MODEL] Loading weights on CPU first to enable fp16 cast...")
-        self.dino_model = DinoToolModel(dino_name, device="cpu", verbose=True)
+        # dinotool calls AutoModel.from_pretrained() with no torch_dtype, so weights
+        # default to float32 (~28 GB for a 7B model).  We patch from_pretrained at
+        # the class level to inject torch_dtype=fp16/bf16 so the model loads at half
+        # precision (~14 GB) directly onto the target device — no post-load moves or
+        # device-routing mismatches.
+        _restore_fp = []
+        if self.device.type != "cpu":
+            cast_dtype = self.amp_dtype if self.amp_dtype is not None else torch.float16
+            try:
+                import transformers as _tf
+                _orig_func = _tf.AutoModel.from_pretrained.__func__
+                _cast = cast_dtype  # capture for closure
+                @classmethod
+                def _fp_patched(cls, *args, **kwargs):
+                    kwargs.setdefault('torch_dtype', _cast)
+                    return _orig_func(cls, *args, **kwargs)
+                _tf.AutoModel.from_pretrained = _fp_patched
+                _restore_fp.append((_tf, _orig_func))
+                safe_print(f"[MODEL] Loading DINOv3 in {cast_dtype} on {self.device}...")
+            except Exception as patch_err:
+                safe_print(f"[MODEL] Could not enable {cast_dtype} load ({patch_err}), loading in fp32")
+        else:
+            safe_print(f"[MODEL] Loading DINOv3 on CPU...")
+
+        try:
+            self.dino_model = DinoToolModel(dino_name, device=str(self.device), verbose=True)
+        except RuntimeError as oom_err:
+            if "out of memory" in str(oom_err).lower():
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                safe_print(f"[MODEL] OOM loading DINOv3 to GPU — falling back to CPU")
+                self.dino_model = DinoToolModel(dino_name, device="cpu", verbose=True)
+                self.device      = torch.device("cpu")
+                self.device_name = "CPU (insufficient VRAM for DINOv3)"
+                self.amp_dtype   = None
+            else:
+                raise
+        finally:
+            for (_tf_ref, _orig_f) in _restore_fp:
+                try:
+                    _tf_ref.AutoModel.from_pretrained = classmethod(_orig_f)
+                except Exception:
+                    pass
+
         try:
             self.dino_model = self.dino_model.eval()
         except Exception:
             pass  # DinoToolModel may not be an nn.Module directly
-
-        if self.device.type != "cpu":
-            cast_dtype = self.amp_dtype if self.amp_dtype is not None else torch.float16
-            safe_print(f"[MODEL] Casting to {cast_dtype} before GPU transfer...")
-            try:
-                # dinotool wraps the actual nn.Module in a .model attribute
-                inner = getattr(self.dino_model, 'model', None)
-                if inner is not None and hasattr(inner, 'to'):
-                    self.dino_model.model = inner.to(dtype=cast_dtype).to(self.device)
-                elif hasattr(self.dino_model, 'to'):
-                    self.dino_model = self.dino_model.to(dtype=cast_dtype).to(self.device)
-                # Keep DinoToolModel's internal device reference in sync
-                if hasattr(self.dino_model, 'device'):
-                    self.dino_model.device = str(self.device)
-                safe_print(f"[MODEL] Cast + moved to {self.device} OK")
-            except Exception as cast_err:
-                safe_print(f"[MODEL] fp16 cast failed ({cast_err}), trying fp32 move to GPU...")
-                try:
-                    inner = getattr(self.dino_model, 'model', None)
-                    if inner is not None and hasattr(inner, 'to'):
-                        self.dino_model.model = inner.to(self.device)
-                    elif hasattr(self.dino_model, 'to'):
-                        self.dino_model = self.dino_model.to(self.device)
-                    if hasattr(self.dino_model, 'device'):
-                        self.dino_model.device = str(self.device)
-                except Exception as move_err:
-                    safe_print(f"[MODEL] GPU move failed ({move_err}), staying on CPU")
 
         # Standard DINOv2/v3 preprocessing (ImageNet statistics).
         import torchvision.transforms as T
