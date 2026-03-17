@@ -199,8 +199,88 @@ CELL_HEIGHT = 260
 CACHE_PREFIX = ".clip_cache_"
 CACHE_SUFFIX = ".pkl"
 
-MODEL_NAME = "ViT-L-14"
-MODEL_PRETRAINED = "laion2b_s32b_b82k"
+# ── Model registry ─────────────────────────────────────────────────────────────
+# Each entry exposes the full configuration needed to load and run one backend.
+# has_text=True  → supports both text queries and image queries (full search)
+# has_text=False → image similarity only (DINOv2/v3 have no text encoder)
+MODEL_REGISTRY = {
+    "clip-vit-l-14-laion": {
+        "label":      "CLIP ViT-L-14",
+        "subtitle":   "LAION-2B  •  Text + Image search  •  Default",
+        "type":       "openclip",
+        "model_name": "ViT-L-14",
+        "pretrained": "laion2b_s32b_b82k",
+        "has_text":   True,
+        "cache_key":  "ViT-L-14_LAION2B",   # preserves old cache filenames
+        "input_size": 224,
+    },
+    "siglip2-so400m-384": {
+        "label":        "SigLIP2 SO/400M",
+        "subtitle":     "384 px  •  Text + Image search  •  Higher quality than CLIP",
+        "type":         "siglip2",
+        "hf_model_id":  "google/siglip2-so400m-patch14-384",
+        "has_text":     True,
+        "cache_key":    "SigLIP2-SO400M-384",
+        "input_size":   384,
+    },
+    "dinov2-l": {
+        "label":     "DINOv2 ViT-L/14",
+        "subtitle":  "Image similarity only  •  Open access  •  Strong visual features",
+        "type":      "dinotool",
+        "dino_name": "vit-l",
+        "has_text":  False,
+        "cache_key": "DINOv2-L",
+        "input_size": 518,
+    },
+    "dinov2-g": {
+        "label":     "DINOv2 ViT-G/14",
+        "subtitle":  "Best DINOv2  •  Image similarity only  •  Open access",
+        "type":      "dinotool",
+        "dino_name": "vit-g",
+        "has_text":  False,
+        "cache_key": "DINOv2-G",
+        "input_size": 518,
+    },
+    "dinov3-b": {
+        "label":            "DINOv3 ViT-B/16",
+        "subtitle":         "Meta 2025  •  Image only  •  Requires HuggingFace login",
+        "type":             "dinotool",
+        "dino_name":        "dinov3-b",
+        "has_text":         False,
+        "cache_key":        "DINOv3-B",
+        "input_size":       518,
+        "requires_hf_auth": True,
+    },
+    "dinov3-l": {
+        "label":            "DINOv3 ViT-L/16",
+        "subtitle":         "Meta 2025  •  Best visual quality  •  Image only  •  Requires HuggingFace login",
+        "type":             "dinotool",
+        "dino_name":        "dinov3-l",
+        "has_text":         False,
+        "cache_key":        "DINOv3-L",
+        "input_size":       518,
+        "requires_hf_auth": True,
+    },
+}
+
+DEFAULT_MODEL_KEY = "clip-vit-l-14-laion"
+
+# Persisted user preferences (model choice, etc.)
+SETTINGS_FILE = Path.home() / ".makimus_config.json"
+
+def _load_app_settings():
+    try:
+        with open(SETTINGS_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_app_settings(data):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        safe_print(f"[SETTINGS] Save failed: {e}")
 
 # --- ONNX Toggle ---
 # Set USE_ONNX = True ONLY if PyTorch CUDA doesn't work on your GPU
@@ -330,80 +410,84 @@ def pil_to_pixmap(pil_img):
     return QPixmap.fromImage(qimg)
 
 
+def _detect_device():
+    """Return (device, device_name, amp_dtype) for the best available accelerator."""
+    import torch
+    device_name = "CPU"
+    try:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+            device_name = f"CUDA (GPU {torch.cuda.get_device_name(0)})"
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            device = torch.device("mps")
+            device_name = "Metal (Apple GPU)"
+        elif os.name == 'nt':
+            try:
+                import torch_directml
+                device = torch_directml.device()
+                device_name = "DirectML (Windows GPU)"
+            except ImportError:
+                device = torch.device("cpu")
+        else:
+            device = torch.device("cpu")
+    except Exception:
+        device = torch.device("cpu")
+
+    # Detect best AMP dtype
+    amp_dtype = None
+    try:
+        if torch.cuda.is_available():
+            major, minor = torch.cuda.get_device_capability(0)
+            if major >= 8:
+                if major >= 9 or (major == 8 and minor >= 9):
+                    amp_dtype = torch.bfloat16
+                else:
+                    amp_dtype = torch.float16
+            elif major >= 7:
+                amp_dtype = torch.float16
+        elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            amp_dtype = torch.float16
+    except Exception:
+        amp_dtype = None
+
+    return device, device_name, amp_dtype
+
+
 class HybridCLIPModel:
     """
-    Cross-Platform Hybrid Model Wrapper
+    Cross-Platform Hybrid Model Wrapper (open_clip backend).
+    Accepts a model_cfg dict from MODEL_REGISTRY.
     """
-    def __init__(self):
+    def __init__(self, model_cfg):
         import torch
         import open_clip
         if USE_ONNX:
             import onnxruntime as ort
-        
+
+        self.model_cfg = model_cfg
+        self.has_text = model_cfg["has_text"]
+        model_name = model_cfg["model_name"]
+        pretrained  = model_cfg.get("pretrained", "")
+
         # 1. Determine Device
-        self.device_name = "CPU"
-        
-        try:
-            if torch.cuda.is_available():
-                self.device = torch.device("cuda")
-                self.device_name = f"CUDA (GPU {torch.cuda.get_device_name(0)})"
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                self.device = torch.device("mps")
-                self.device_name = "Metal (Apple GPU)"
-            elif os.name == 'nt':
-                try:
-                    import torch_directml
-                    self.device = torch_directml.device()
-                    self.device_name = "DirectML (Windows GPU)"
-                except ImportError:
-                    self.device = torch.device("cpu")
-            else:
-                self.device = torch.device("cpu")
-        except Exception:
-            self.device = torch.device("cpu")
-        
+        self.device, self.device_name, self.amp_dtype = _detect_device()
         safe_print(f"[MODEL] Using Device: {self.device_name}")
+        if self.amp_dtype is not None:
+            safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype}")
 
         # Enable TF32 on Ampere+ for free matmul speedup (ignored on non-CUDA)
         try:
-            import torch
             if torch.cuda.is_available():
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
         except Exception:
             pass
 
-        # Detect best inference dtype for this GPU — no fallback needed, autocast handles it
-        self.amp_dtype = None  # None = disabled (CPU, DirectML, old GPU)
-        try:
-            import torch
-            if torch.cuda.is_available():
-                major, minor = torch.cuda.get_device_capability(0)
-                if major >= 8:  # Ampere (30xx) and newer — full BF16/FP16 Tensor Cores
-                    # BF16 preferred on Ada (40xx) and Blackwell (50xx), FP16 on Ampere (30xx)
-                    if major >= 9 or (major == 8 and minor >= 9):
-                        self.amp_dtype = torch.bfloat16  # Ada/Blackwell
-                    else:
-                        self.amp_dtype = torch.float16   # Ampere (RTX 30xx)
-                    safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype}")
-                elif major >= 7:  # Turing/Volta (RTX 20xx, GTX 16xx) — FP16 works
-                    self.amp_dtype = torch.float16
-                    safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype}")
-                else:
-                    safe_print(f"[MODEL] Mixed precision disabled (GPU too old)")
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                self.amp_dtype = torch.float16  # Apple MPS supports FP16
-                safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype} (MPS)")
-        except Exception:
-            self.amp_dtype = None  # safe fallback
-
         # RTX 50-series (Blackwell) check — warn if PyTorch version is too old
         try:
-            import torch
             if torch.cuda.is_available():
                 major, minor = torch.cuda.get_device_capability(0)
-                if major >= 12:  # sm_120 = Blackwell (RTX 50-series)
-                    import torch
+                if major >= 12:
                     pt_version = tuple(int(x) for x in torch.__version__.split('.')[:2])
                     if pt_version < (2, 7):
                         safe_print(f"\n{'='*60}")
@@ -418,37 +502,38 @@ class HybridCLIPModel:
         except Exception:
             pass
 
-        safe_print(f"[MODEL] Loading: {MODEL_NAME}")
-        
+        safe_print(f"[MODEL] Loading: {model_name}")
+
         # 2. Load PyTorch Model
         model_loaded = False
-        
+
         try:
             import huggingface_hub
             huggingface_hub.constants.HF_HUB_OFFLINE = True
             os.environ["HF_HUB_OFFLINE"] = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            
+            kw = dict(pretrained=pretrained) if pretrained else {}
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                MODEL_NAME, pretrained=MODEL_PRETRAINED
+                model_name, **kw
             )
-            self.tokenizer = open_clip.get_tokenizer(MODEL_NAME)
+            self.tokenizer = open_clip.get_tokenizer(model_name)
             safe_print(f"[MODEL] Loaded from local cache")
             model_loaded = True
         except Exception:
             safe_print(f"[MODEL] Cache not available, connecting to download...")
-        
+
         if not model_loaded:
             try:
                 import huggingface_hub
                 huggingface_hub.constants.HF_HUB_OFFLINE = False
                 os.environ["HF_HUB_OFFLINE"] = "0"
                 os.environ["TRANSFORMERS_OFFLINE"] = "0"
-                safe_print(f"[MODEL] Downloading {MODEL_NAME} (this may take a while)...")
+                safe_print(f"[MODEL] Downloading {model_name} (this may take a while)...")
+                kw = dict(pretrained=pretrained) if pretrained else {}
                 self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                    MODEL_NAME, pretrained=MODEL_PRETRAINED
+                    model_name, **kw
                 )
-                self.tokenizer = open_clip.get_tokenizer(MODEL_NAME)
+                self.tokenizer = open_clip.get_tokenizer(model_name)
                 safe_print(f"[MODEL] Download complete!")
             except Exception as e:
                 safe_print(f"[MODEL] Download failed: {e}")
@@ -500,7 +585,7 @@ class HybridCLIPModel:
         # Setup ONNX Visual Encoder
         cache_dir = Path.home() / ".cache" / "onnx_clip"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        self.onnx_visual_path = cache_dir / f"{MODEL_NAME.replace('-', '_')}_visual.onnx"
+        self.onnx_visual_path = cache_dir / f"{self.model_cfg['cache_key'].replace('-', '_')}_visual.onnx"
         
         if not self.onnx_visual_path.exists():
             safe_print(f"[ONNX] Attempting visual encoder export...")
@@ -756,6 +841,259 @@ class HybridCLIPModel:
             raise
 
 
+# ── SigLIP2 backend (google/siglip2 via HuggingFace transformers) ──────────────
+class SigLIP2BackendModel:
+    """
+    Vision-language backend using Google SigLIP2 via the transformers library.
+    Supports both text and image queries; higher quality than CLIP ViT-L-14.
+    """
+    def __init__(self, model_cfg):
+        import torch
+        self.model_cfg = model_cfg
+        self.has_text  = True
+        self.use_onnx_visual = False
+        self.onnx_disabled   = True
+
+        self.device, self.device_name, self.amp_dtype = _detect_device()
+        safe_print(f"[MODEL] Using Device: {self.device_name}")
+        if self.amp_dtype is not None:
+            safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype}")
+
+        try:
+            from transformers import AutoProcessor, AutoModel
+        except ImportError as e:
+            raise RuntimeError(
+                "SigLIP2 requires the 'transformers' library (>=4.56).\n"
+                "Install with: pip install transformers>=4.56"
+            ) from e
+
+        hf_id = model_cfg["hf_model_id"]
+        input_size = model_cfg.get("input_size", 384)
+        safe_print(f"[MODEL] Loading SigLIP2: {hf_id}")
+
+        # Try offline first, fall back to download
+        try:
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            self.processor = AutoProcessor.from_pretrained(hf_id)
+            self.hf_model  = AutoModel.from_pretrained(hf_id)
+            safe_print(f"[MODEL] Loaded from local cache")
+        except Exception:
+            safe_print(f"[MODEL] Cache not available, downloading {hf_id}...")
+            os.environ["HF_HUB_OFFLINE"] = "0"
+            os.environ["TRANSFORMERS_OFFLINE"] = "0"
+            self.processor = AutoProcessor.from_pretrained(hf_id)
+            self.hf_model  = AutoModel.from_pretrained(hf_id)
+            safe_print(f"[MODEL] Download complete!")
+
+        try:
+            self.hf_model = self.hf_model.to(self.device).eval()
+        except Exception as gpu_err:
+            safe_print(f"[MODEL] GPU transfer failed ({gpu_err}), falling back to CPU")
+            self.device      = torch.device("cpu")
+            self.device_name = "CPU (GPU fallback)"
+            self.amp_dtype   = None
+            self.hf_model    = self.hf_model.to(self.device).eval()
+
+        # Torchvision preprocess compatible with the indexing worker threads.
+        # SigLIP2 uses 0.5/0.5 normalisation (maps [0,1] → [-1,1]).
+        import torchvision.transforms as T
+        self.preprocess = T.Compose([
+            T.Resize(input_size, interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(input_size),
+            T.ToTensor(),
+            T.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+        safe_print(f"[MODEL] Ready!\n")
+
+    def encode_image_batch(self, images):
+        import torch
+        tensors = [self.preprocess(img.convert("RGB")) for img in images]
+        return self.encode_tensor_batch(tensors)
+
+    def encode_tensor_batch(self, tensors):
+        import torch
+        stacked = torch.stack(tensors)
+        if torch.cuda.is_available():
+            stacked = stacked.pin_memory()
+            pixel_values = stacked.to(self.device, non_blocking=True)
+        else:
+            pixel_values = stacked.to(self.device)
+
+        with torch.no_grad():
+            if self.amp_dtype and torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    features = self.hf_model.get_image_features(pixel_values=pixel_values)
+            elif self.amp_dtype and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                with torch.autocast(device_type="mps", dtype=self.amp_dtype):
+                    features = self.hf_model.get_image_features(pixel_values=pixel_values)
+            else:
+                features = self.hf_model.get_image_features(pixel_values=pixel_values)
+
+        features = features.float()
+        features = features / features.norm(dim=-1, keepdim=True)
+        return features.cpu().numpy()
+
+    def encode_text(self, texts):
+        import torch
+        inputs = self.processor(text=texts, return_tensors="pt",
+                                padding="max_length", truncation=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()
+                  if k in ("input_ids", "attention_mask")}
+        with torch.no_grad():
+            if self.amp_dtype and torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    features = self.hf_model.get_text_features(**inputs)
+            else:
+                features = self.hf_model.get_text_features(**inputs)
+
+        features = features.float()
+        features = features / features.norm(dim=-1, keepdim=True)
+        result = features.cpu().numpy()
+        safe_print(f"[ENCODE] Text encoded successfully, shape: {result.shape}")
+        return result
+
+
+# ── DINOv2 / DINOv3 backend (via dinotool) ─────────────────────────────────────
+class DinoBackendModel:
+    """
+    Vision-only backend using Meta DINOv2 or DINOv3 via the dinotool library.
+    Produces rich spatial visual features; does NOT support text queries.
+
+    Install:  pip install dinotool
+    DINOv3 access: requires HuggingFace account + model access grant.
+                   Run: hf auth login
+    """
+    def __init__(self, model_cfg):
+        import torch
+        self.model_cfg = model_cfg
+        self.has_text  = False
+        self.use_onnx_visual = False
+        self.onnx_disabled   = True
+
+        self.device, self.device_name, self.amp_dtype = _detect_device()
+        safe_print(f"[MODEL] Using Device: {self.device_name}")
+        if self.amp_dtype is not None:
+            safe_print(f"[MODEL] Mixed precision enabled: {self.amp_dtype}")
+
+        try:
+            from dinotool import DinoToolModel
+        except ImportError as e:
+            raise RuntimeError(
+                "DINOv2/v3 backends require the 'dinotool' library.\n"
+                "Install with: pip install dinotool"
+            ) from e
+
+        dino_name  = model_cfg["dino_name"]
+        input_size = model_cfg.get("input_size", 518)
+        safe_print(f"[MODEL] Loading dinotool: {dino_name}  (input {input_size}px)")
+
+        if model_cfg.get("requires_hf_auth"):
+            safe_print(f"[MODEL] NOTE: {dino_name} is a gated HuggingFace model.")
+            safe_print(f"[MODEL]       If loading fails, run:  hf auth login")
+
+        self.dino_model = DinoToolModel(dino_name, device=str(self.device), verbose=True)
+        try:
+            self.dino_model = self.dino_model.eval()
+        except Exception:
+            pass  # DinoToolModel may not be an nn.Module directly
+
+        # Standard DINOv2/v3 preprocessing (ImageNet statistics).
+        import torchvision.transforms as T
+        self.input_size = input_size
+        self.preprocess = T.Compose([
+            T.Resize(input_size, interpolation=T.InterpolationMode.BICUBIC),
+            T.CenterCrop(input_size),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        safe_print(f"[MODEL] Ready!\n")
+
+    def encode_image_batch(self, images):
+        import torch
+        tensors = [self.preprocess(img.convert("RGB")) for img in images]
+        return self.encode_tensor_batch(tensors)
+
+    def encode_tensor_batch(self, tensors):
+        import torch
+        stacked = torch.stack(tensors)
+        if torch.cuda.is_available():
+            stacked = stacked.pin_memory()
+            input_tensor = stacked.to(self.device, non_blocking=True)
+        else:
+            input_tensor = stacked.to(self.device)
+
+        with torch.no_grad():
+            if self.amp_dtype and torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    raw = self.dino_model(input_tensor, return_clstoken=True)
+            elif self.amp_dtype and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                with torch.autocast(device_type="mps", dtype=self.amp_dtype):
+                    raw = self.dino_model(input_tensor, return_clstoken=True)
+            else:
+                raw = self.dino_model(input_tensor, return_clstoken=True)
+
+        # Normalise to a (B, D) float32 numpy array regardless of what dinotool returns.
+        feat = self._extract_feature_tensor(raw)
+        feat_np = feat.float().cpu().numpy()
+        norms = np.linalg.norm(feat_np, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        return feat_np / norms
+
+    @staticmethod
+    def _extract_feature_tensor(raw):
+        """Collapse whatever dinotool returns to a 2-D (B, D) tensor."""
+        import torch
+        if isinstance(raw, torch.Tensor):
+            feat = raw
+        elif hasattr(raw, "features"):        # LocalFeatures .features attribute
+            feat = raw.features
+        elif hasattr(raw, "full"):             # LocalFeatures .full() spatial grid
+            feat = raw.full()
+        elif hasattr(raw, "flat"):             # LocalFeatures .flat() patch sequence
+            feat = raw.flat()
+        else:
+            feat = torch.as_tensor(raw)
+
+        # Squeeze any spatial dims: (B,1,1,D) → (B,D), (B,1,D) → (B,D), etc.
+        if feat.dim() == 4:
+            B, H, W, D = feat.shape
+            if H == 1 and W == 1:
+                feat = feat.reshape(B, D)
+            else:
+                feat = feat.reshape(B, H * W * D)
+        elif feat.dim() == 3:
+            B, N, D = feat.shape
+            if N == 1:
+                feat = feat.squeeze(1)
+            else:
+                feat = feat.mean(dim=1)    # mean-pool patches as global descriptor
+        return feat
+
+    def encode_text(self, texts):
+        raise RuntimeError(
+            f"The active model ({self.model_cfg['label']}) has no text encoder.\n"
+            "Switch to CLIP or SigLIP2 to use text search."
+        )
+
+
+# ── Model factory ───────────────────────────────────────────────────────────────
+def create_model(model_key: str):
+    """Instantiate and return the model backend for *model_key*."""
+    cfg = MODEL_REGISTRY.get(model_key)
+    if cfg is None:
+        raise ValueError(f"Unknown model key: {model_key!r}")
+    mtype = cfg["type"]
+    if mtype == "openclip":
+        return HybridCLIPModel(cfg)
+    elif mtype == "siglip2":
+        return SigLIP2BackendModel(cfg)
+    elif mtype == "dinotool":
+        return DinoBackendModel(cfg)
+    else:
+        raise ValueError(f"Unknown model type: {mtype!r}")
+
+
 class ResultCard(QFrame):
     """A card widget displaying a single search result (image or video frame)."""
     def __init__(self, parent=None):
@@ -896,6 +1234,102 @@ class ResultsScrollArea(QScrollArea):
         return super().eventFilter(obj, event)
 
 
+class ModelSelectorDialog(QDialog):
+    """
+    Dialog for choosing the active embedding model.
+    Shows all models in MODEL_REGISTRY with labels, subtitles, and capability badges.
+    """
+    def __init__(self, parent, current_key: str):
+        super().__init__(parent)
+        self.setWindowTitle("Select Embedding Model")
+        self.resize(620, 420)
+        self.selected_key = current_key
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        hdr = QLabel(
+            "Choose the model used to index and search your media.\n"
+            "Models with a text encoder support both text queries and image queries.\n"
+            "Vision-only models support image-similarity search only.\n\n"
+            "Note: switching models requires re-indexing your folder."
+        )
+        hdr.setWordWrap(True)
+        hdr.setStyleSheet("color: #aaaaaa; font-size: 9pt;")
+        layout.addWidget(hdr)
+
+        self.list_widget = QListWidget()
+        self.list_widget.setStyleSheet(
+            f"QListWidget::item {{ padding: 8px; border-bottom: 1px solid {BORDER}; }}"
+            f"QListWidget::item:selected {{ background: {ACCENT}; color: white; }}"
+        )
+        self.list_widget.setFont(QFont("Segoe UI", 10))
+
+        self._keys = list(MODEL_REGISTRY.keys())
+        for key in self._keys:
+            cfg = MODEL_REGISTRY[key]
+            badge = "✓ Text + Image" if cfg["has_text"] else "⬛ Image only"
+            hf_note = "  [HF login required]" if cfg.get("requires_hf_auth") else ""
+            text = f"{cfg['label']}  —  {badge}{hf_note}\n  {cfg['subtitle']}"
+            item = QListWidgetItem(text)
+            if key == current_key:
+                item.setForeground(__import__('PyQt6.QtGui', fromlist=['QColor']).QColor(ACCENT))
+            self.list_widget.addItem(item)
+            if key == current_key:
+                self.list_widget.setCurrentRow(len(self._keys) - 1 -
+                    (len(self._keys) - 1 - self._keys.index(key)))
+
+        # Select current model row
+        try:
+            self.list_widget.setCurrentRow(self._keys.index(current_key))
+        except ValueError:
+            pass
+
+        self.list_widget.itemDoubleClicked.connect(self._accept_selection)
+        layout.addWidget(self.list_widget, stretch=1)
+
+        # Install-hint label
+        self.hint_label = QLabel("")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet("color: #ffaa00; font-size: 9pt;")
+        layout.addWidget(self.hint_label)
+        self.list_widget.currentRowChanged.connect(self._on_row_changed)
+        self._on_row_changed(self.list_widget.currentRow())
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_select = QPushButton("Use This Model")
+        btn_select.setProperty("class", "accent")
+        btn_select.clicked.connect(self._accept_selection)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_select)
+        layout.addLayout(btn_row)
+
+    def _on_row_changed(self, row):
+        if row < 0 or row >= len(self._keys):
+            self.hint_label.setText("")
+            return
+        key = self._keys[row]
+        cfg = MODEL_REGISTRY[key]
+        hints = []
+        mtype = cfg["type"]
+        if mtype == "dinotool":
+            hints.append("Requires: pip install dinotool")
+        if mtype == "siglip2":
+            hints.append("Requires: pip install transformers>=4.56")
+        if cfg.get("requires_hf_auth"):
+            hints.append("Requires HuggingFace access: run  hf auth login")
+        self.hint_label.setText("  ".join(hints) if hints else "")
+
+    def _accept_selection(self):
+        row = self.list_widget.currentRow()
+        if 0 <= row < len(self._keys):
+            self.selected_key = self._keys[row]
+        self.accept()
+
+
 class ImageSearchApp(QMainWindow):
     # Used by _safe_after to marshal arbitrary callables to the main thread.
     # Emitting from a background thread automatically uses a queued connection
@@ -910,7 +1344,14 @@ class ImageSearchApp(QMainWindow):
 
         if os.name == 'nt':
             self.apply_dark_title_bar()
-        
+
+        # ── Active model ──────────────────────────────────────────────────────
+        _settings = _load_app_settings()
+        self.active_model_key = _settings.get("model_key", DEFAULT_MODEL_KEY)
+        if self.active_model_key not in MODEL_REGISTRY:
+            self.active_model_key = DEFAULT_MODEL_KEY
+        self.model_has_text = MODEL_REGISTRY[self.active_model_key]["has_text"]
+
         self.folder = None
         self.cache_file = None
         self.image_paths = []  # NOW STORES RELATIVE PATHS
@@ -990,14 +1431,14 @@ class ImageSearchApp(QMainWindow):
             self._show_close_dialog()
 
     def get_cache_filename(self):
-        # Format: .clip_cache_ViT-L-14_LAION2B.pkl (preserves hyphens)
-        pretrained_simple = "LAION2B" if "laion2b" in MODEL_PRETRAINED.lower() else MODEL_PRETRAINED.upper()
-        cache_name = f".clip_cache_{MODEL_NAME}_{pretrained_simple}.pkl"
-        return [cache_name]
+        # Each model gets its own cache file keyed by model.cache_key.
+        # CLIP ViT-L-14 keeps the old filename for backward-compat with existing indices.
+        key = MODEL_REGISTRY[self.active_model_key]["cache_key"]
+        return [f".clip_cache_{key}.pkl"]
 
     def get_video_cache_filename(self):
-        pretrained_simple = "LAION2B" if "laion2b" in MODEL_PRETRAINED.lower() else MODEL_PRETRAINED.upper()
-        return f".clip_cache_videos_{MODEL_NAME}_{pretrained_simple}.pkl"
+        key = MODEL_REGISTRY[self.active_model_key]["cache_key"]
+        return f".clip_cache_videos_{key}.pkl"
 
     def get_exclusions_path(self):
         if not self.folder:
@@ -1061,9 +1502,11 @@ class ImageSearchApp(QMainWindow):
         self.btn_index_videos.clicked.connect(self.on_index_videos_click)
         toolbar_layout.addWidget(self.btn_index_videos)
 
-        model_lbl = QLabel(f"Using: {MODEL_NAME}")
-        model_lbl.setStyleSheet(f"color: {ACCENT_SECONDARY};")
-        toolbar_layout.addWidget(model_lbl)
+        self.btn_model = QPushButton(f"Model: {MODEL_REGISTRY[self.active_model_key]['label']}")
+        self.btn_model.setProperty("class", "accent")
+        self.btn_model.setToolTip("Click to change the active embedding model")
+        self.btn_model.clicked.connect(self.open_model_selector)
+        toolbar_layout.addWidget(self.btn_model)
         toolbar_layout.addSpacing(8)
 
         self.btn_stop = QPushButton("STOP INDEX")
@@ -1265,6 +1708,9 @@ class ImageSearchApp(QMainWindow):
         self.scroll_area._on_resize = self.on_scroll_area_resize
         main_layout.addWidget(self.scroll_area, stretch=1)
 
+        # Apply initial text-search state (may be disabled for vision-only models)
+        self._update_text_search_state()
+
     # ---- UI helpers ----
 
     def update_status(self, text, color="blue"):
@@ -1366,10 +1812,16 @@ class ImageSearchApp(QMainWindow):
 
     def load_model(self):
         self.model_loading = True
-        self._safe_after(0, lambda: self.update_status("Loading model...", "orange"))
+        cfg = MODEL_REGISTRY[self.active_model_key]
+        self._safe_after(0, lambda: self.update_status(f"Loading {cfg['label']}...", "orange"))
         try:
-            self.clip_model = HybridCLIPModel()
+            self.clip_model = create_model(self.active_model_key)
             self._safe_after(0, lambda: self.update_status("Ready", "green"))
+            # Update model button label now that we know the real device
+            self._safe_after(0, lambda: self.btn_model.setText(
+                f"Model: {MODEL_REGISTRY[self.active_model_key]['label']}"))
+            # Update text-search state in case model was changed at runtime
+            self._safe_after(0, self._update_text_search_state)
             device = self.clip_model.device_name
             batch = BATCH_SIZE
             if "CUDA" in device:
@@ -1405,6 +1857,58 @@ class ImageSearchApp(QMainWindow):
             self._safe_after(0, lambda: self.device_label.setText("Load Failed"))
             self._safe_after(0, lambda m=display_msg: QMessageBox.critical(self, "Error", m))
         self.model_loading = False
+
+    # ---- Model selection ----
+
+    def _update_text_search_state(self):
+        """Enable / disable text-search controls based on whether the active model
+        has a text encoder.  Called after every model change."""
+        has_text = MODEL_REGISTRY[self.active_model_key]["has_text"]
+        self.model_has_text = has_text
+        self.query_entry.setEnabled(has_text)
+        self.btn_search.setEnabled(has_text)
+        if has_text:
+            self.query_entry.setPlaceholderText("")
+        else:
+            label = MODEL_REGISTRY[self.active_model_key]["label"]
+            self.query_entry.setPlaceholderText(
+                f"{label} is vision-only — use Image search")
+
+    def open_model_selector(self):
+        """Open the model-selection dialog.  Only allowed when not indexing."""
+        if self.model_loading:
+            QMessageBox.information(self, "Model Loading",
+                                    "Please wait for the model to finish loading.")
+            return
+        if not self.is_safe_to_act(action_name="change model"):
+            return
+        dlg = ModelSelectorDialog(self, self.active_model_key)
+        if dlg.exec() and dlg.selected_key != self.active_model_key:
+            new_key = dlg.selected_key
+            cfg = MODEL_REGISTRY[new_key]
+            self.active_model_key = new_key
+            _save_app_settings({**_load_app_settings(), "model_key": new_key})
+            self.btn_model.setText(f"Model: {cfg['label']}")
+            self._update_text_search_state()
+            # Clear the existing index — different model → incompatible embeddings
+            self.image_embeddings  = None
+            self.image_paths       = []
+            self.video_embeddings  = None
+            self.video_paths       = []
+            self.cache_file        = None
+            self.video_cache_file  = None
+            self._pending_image_batches = []
+            self._pending_video_batches = []
+            self.clip_model = None
+            self.update_status(f"Loading {cfg['label']}...", "orange")
+            QMessageBox.information(
+                self, "Model Changed",
+                f"Switched to: {cfg['label']}\n\n"
+                f"{cfg['subtitle']}\n\n"
+                "The model is loading now.  Once ready, select your folder and re-index "
+                "(each model needs its own index file)."
+            )
+            Thread(target=self.load_model, daemon=True).start()
 
     # ---- Action handlers ----
 
@@ -2685,6 +3189,18 @@ class ImageSearchApp(QMainWindow):
         if self.is_searching or self.clip_model is None:
             safe_print("[SEARCH] Already searching or model not loaded")
             return
+
+        # Vision-only models (DINOv2/v3) cannot process text queries
+        if not self.model_has_text:
+            label = MODEL_REGISTRY[self.active_model_key]["label"]
+            QMessageBox.warning(
+                self, "Text Search Not Available",
+                f"The active model ({label}) does not have a text encoder.\n\n"
+                "Switch to CLIP or SigLIP2 via the Model button to enable text search,\n"
+                "or use the Image button to search by visual similarity."
+            )
+            return
+
         has_image_data = (self.image_embeddings is not None and len(self.image_paths) > 0) or \
                          bool(getattr(self, '_pending_image_batches', None))
         has_video_data = (self.video_embeddings is not None and len(self.video_paths) > 0) or \
@@ -3582,8 +4098,8 @@ class ImageSearchApp(QMainWindow):
             f"Video Cache:\n  {video_cache_str}\n"
             f"Video Cache Size:  {video_cache_size_str}\n\n"
             f"Videos Indexed:  {total_videos:,} ({total_frames:,} frames)\n\n"
-            f"Model:  {MODEL_NAME}\n"
-            f"Pretrained:  {MODEL_PRETRAINED}\n\n"
+            f"Model:  {MODEL_REGISTRY[self.active_model_key]['label']}\n"
+            f"  ({MODEL_REGISTRY[self.active_model_key]['subtitle']})\n\n"
             f"Exclusion Patterns:  {exclusions_str}"
         )
         QMessageBox.information(self, "Index Info", info)
