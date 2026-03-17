@@ -4958,7 +4958,7 @@ class ImageSearchApp(QMainWindow):
                 self.start_thumbnail_loader(first_batch, self.search_generation)
 
             view_btn = QPushButton("View Album")
-            view_btn.clicked.connect(view_album)
+            view_btn.clicked.connect(lambda _, fn=view_album: fn())
             card_layout.addWidget(view_btn)
 
             grid_layout.addWidget(card, row, col)
