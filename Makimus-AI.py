@@ -18,6 +18,14 @@ import warnings
 from PIL import Image
 import numpy as np
 
+# Import torch before PyQt6 on Windows: PyQt6 loads Qt6/VC++ DLLs that can
+# cause WinError 1114 (DLL init failure) if they load before torch's CUDA DLLs.
+# Python caches imports, so this is free after the first load.
+try:
+    import torch
+except Exception:
+    pass
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QLineEdit, QCheckBox, QSlider, QSpinBox, QScrollArea, QListWidget,
