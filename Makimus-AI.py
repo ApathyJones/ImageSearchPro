@@ -1077,11 +1077,43 @@ class DinoBackendModel:
             safe_print(f"[MODEL] NOTE: {dino_name} is a gated HuggingFace model.")
             safe_print(f"[MODEL]       If loading fails, run:  hf auth login")
 
-        self.dino_model = DinoToolModel(dino_name, device=str(self.device), verbose=True)
+        # Load on CPU first so we can cast to fp16/bf16 before moving to GPU.
+        # AutoModel.from_pretrained (used by dinotool for DINOv3) defaults to
+        # float32, meaning a 7B model would need ~28 GB VRAM.  Casting to
+        # fp16/bf16 on CPU first halves that to ~14 GB before the GPU transfer.
+        safe_print(f"[MODEL] Loading weights on CPU first to enable fp16 cast...")
+        self.dino_model = DinoToolModel(dino_name, device="cpu", verbose=True)
         try:
             self.dino_model = self.dino_model.eval()
         except Exception:
             pass  # DinoToolModel may not be an nn.Module directly
+
+        if self.device.type != "cpu":
+            cast_dtype = self.amp_dtype if self.amp_dtype is not None else torch.float16
+            safe_print(f"[MODEL] Casting to {cast_dtype} before GPU transfer...")
+            try:
+                # dinotool wraps the actual nn.Module in a .model attribute
+                inner = getattr(self.dino_model, 'model', None)
+                if inner is not None and hasattr(inner, 'to'):
+                    self.dino_model.model = inner.to(dtype=cast_dtype).to(self.device)
+                elif hasattr(self.dino_model, 'to'):
+                    self.dino_model = self.dino_model.to(dtype=cast_dtype).to(self.device)
+                # Keep DinoToolModel's internal device reference in sync
+                if hasattr(self.dino_model, 'device'):
+                    self.dino_model.device = str(self.device)
+                safe_print(f"[MODEL] Cast + moved to {self.device} OK")
+            except Exception as cast_err:
+                safe_print(f"[MODEL] fp16 cast failed ({cast_err}), trying fp32 move to GPU...")
+                try:
+                    inner = getattr(self.dino_model, 'model', None)
+                    if inner is not None and hasattr(inner, 'to'):
+                        self.dino_model.model = inner.to(self.device)
+                    elif hasattr(self.dino_model, 'to'):
+                        self.dino_model = self.dino_model.to(self.device)
+                    if hasattr(self.dino_model, 'device'):
+                        self.dino_model.device = str(self.device)
+                except Exception as move_err:
+                    safe_print(f"[MODEL] GPU move failed ({move_err}), staying on CPU")
 
         # Standard DINOv2/v3 preprocessing (ImageNet statistics).
         import torchvision.transforms as T
@@ -2031,10 +2063,14 @@ class ImageSearchApp(QMainWindow):
             inner = getattr(old_model, 'model', None)
             if inner is not None and hasattr(inner, 'cpu'):
                 inner.cpu()
-            for attr in ('visual_model', 'text_model', '_model'):
+            for attr in ('visual_model', 'text_model', '_model', 'dino_model'):
                 sub = getattr(old_model, attr, None)
-                if sub is not None and hasattr(sub, 'cpu'):
-                    sub.cpu()
+                if sub is not None:
+                    sub_inner = getattr(sub, 'model', None)
+                    if sub_inner is not None and hasattr(sub_inner, 'cpu'):
+                        sub_inner.cpu()
+                    elif hasattr(sub, 'cpu'):
+                        sub.cpu()
             if hasattr(old_model, '_destroy_onnx_session'):
                 old_model._destroy_onnx_session()
             del old_model
@@ -2131,10 +2167,14 @@ class ImageSearchApp(QMainWindow):
                     if inner is not None and hasattr(inner, 'cpu'):
                         inner.cpu()
                     # Also handle SigLIP2 / DINOv3 which store the model differently.
-                    for attr in ('visual_model', 'text_model', '_model'):
+                    for attr in ('visual_model', 'text_model', '_model', 'dino_model'):
                         sub = getattr(old_model, attr, None)
-                        if sub is not None and hasattr(sub, 'cpu'):
-                            sub.cpu()
+                        if sub is not None:
+                            sub_inner = getattr(sub, 'model', None)
+                            if sub_inner is not None and hasattr(sub_inner, 'cpu'):
+                                sub_inner.cpu()
+                            elif hasattr(sub, 'cpu'):
+                                sub.cpu()
                     del old_model
                     gc.collect()
                     if torch.cuda.is_available():
