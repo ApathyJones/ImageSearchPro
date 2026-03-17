@@ -4717,9 +4717,18 @@ class ImageSearchApp(QMainWindow):
                     if ap in action_vars:
                         action_vars[ap].setChecked(k > 0)
 
+            def _check_all_in_group(g=group):
+                for ap, _rp, _img in g:
+                    if ap in action_vars:
+                        action_vars[ap].setChecked(True)
+
             keep_btn = QPushButton("Keep First, Check Rest")
             keep_btn.clicked.connect(_check_rest)
             grp_hdr.addWidget(keep_btn)
+
+            all_btn = QPushButton("Select All in Group")
+            all_btn.clicked.connect(_check_all_in_group)
+            grp_hdr.addWidget(all_btn)
             grp_layout.addLayout(grp_hdr)
 
             thumbs_row_widget = QWidget()
