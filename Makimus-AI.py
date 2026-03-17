@@ -1024,6 +1024,7 @@ class DinoBackendModel:
         import torchvision.transforms as T
         self.input_size = input_size
         self.preprocess = T.Compose([
+            T.Lambda(lambda img: img.convert("RGB")),  # handles RGBA / palette PNGs
             T.Resize(input_size, interpolation=T.InterpolationMode.BICUBIC),
             T.CenterCrop(input_size),
             T.ToTensor(),
@@ -1048,12 +1049,12 @@ class DinoBackendModel:
         with torch.no_grad():
             if self.amp_dtype and torch.cuda.is_available():
                 with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
-                    raw = self.dino_model(input_tensor, return_clstoken=True)
+                    raw = self.dino_model(input_tensor, features="frame")
             elif self.amp_dtype and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 with torch.autocast(device_type="mps", dtype=self.amp_dtype):
-                    raw = self.dino_model(input_tensor, return_clstoken=True)
+                    raw = self.dino_model(input_tensor, features="frame")
             else:
-                raw = self.dino_model(input_tensor, return_clstoken=True)
+                raw = self.dino_model(input_tensor, features="frame")
 
         # Normalise to a (B, D) float32 numpy array regardless of what dinotool returns.
         feat = self._extract_feature_tensor(raw)
@@ -1068,6 +1069,8 @@ class DinoBackendModel:
         import torch
         if isinstance(raw, torch.Tensor):
             feat = raw
+        elif hasattr(raw, "tensor"):           # dinotool wrapper object
+            feat = raw.tensor
         elif hasattr(raw, "features"):        # LocalFeatures .features attribute
             feat = raw.features
         elif hasattr(raw, "full"):             # LocalFeatures .full() spatial grid
@@ -2203,9 +2206,25 @@ class ImageSearchApp(QMainWindow):
         else:
             safe_print("[CACHE] Image cache not found")
             if not found_video_cache:
-                # No image cache AND no video cache — ask to index images
-                if QMessageBox.question(self, "Index Folder?",
-                        f"No cache found for this folder.\n\nIndex images now?",
+                # Check if a *different* model's cache exists — helps the user understand why
+                active_label = MODEL_REGISTRY[self.active_model_key]["label"]
+                other_labels = [
+                    cfg["label"]
+                    for key, cfg in MODEL_REGISTRY.items()
+                    if key != self.active_model_key
+                    and os.path.exists(os.path.join(folder, f".clip_cache_{cfg['cache_key']}.pkl"))
+                ]
+                if other_labels:
+                    detail = (
+                        f"No index found for the active model ({active_label}).\n\n"
+                        f"Found an existing index for: {', '.join(other_labels)}\n"
+                        f"These are incompatible with {active_label} — each model stores\n"
+                        f"embeddings in a different format.\n\n"
+                        f"Re-index this folder now to create a {active_label} index?"
+                    )
+                else:
+                    detail = f"No index found for this folder.\n\nIndex images now with {active_label}?"
+                if QMessageBox.question(self, "Index Folder?", detail,
                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
                     self.cache_file = os.path.join(folder, cache_files[0])
                     self.start_indexing(mode="full")
