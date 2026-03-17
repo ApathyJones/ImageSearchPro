@@ -1708,6 +1708,17 @@ class ImageSearchApp(QMainWindow):
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.progress_label)
 
+        # --- Inline info bar (replaces chatty popups) ---
+        self.info_bar = QLabel("")
+        self.info_bar.setWordWrap(True)
+        self.info_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_bar.setStyleSheet(
+            f"color: {FG}; background-color: #2a2a3a; border: 1px solid #555;"
+            "border-radius: 4px; padding: 4px 8px; font-size: 9pt;"
+        )
+        self.info_bar.setVisible(False)
+        main_layout.addWidget(self.info_bar)
+
         # --- Page navigation ---
         self.page_nav_widget = QWidget()
         page_nav_layout = QHBoxLayout(self.page_nav_widget)
@@ -1751,6 +1762,14 @@ class ImageSearchApp(QMainWindow):
         c = color_map.get(color, color)
         self.status_label.setText(text)
         self.status_label.setStyleSheet(f"color: {c};")
+
+    def show_info_bar(self, msg: str):
+        """Display a non-blocking informational message in the inline info bar."""
+        self.info_bar.setText(msg)
+        self.info_bar.setVisible(True)
+
+    def hide_info_bar(self):
+        self.info_bar.setVisible(False)
 
     def update_stats(self):
         has_images = self.image_embeddings is not None and len(self.image_paths) > 0
@@ -2018,6 +2037,7 @@ class ImageSearchApp(QMainWindow):
         self.delete_selected()
 
     def on_search_click(self):
+        self.hide_info_bar()
         self.cancel_search(clear_ui=True)
         self.do_search()
 
@@ -3065,7 +3085,7 @@ class ImageSearchApp(QMainWindow):
                 self._safe_after(200, lambda: self.start_indexing(mode="video_refresh"))
                 return
             self._safe_after(0, lambda: self.update_status("Indexing Complete", "green"))
-            self._safe_after(0, lambda: QMessageBox.information(self, "Done", f"Index complete.\nTotal images: {count:,}"))
+            self._safe_after(0, lambda c=count: self.show_info_bar(f"Index complete — {c:,} images indexed."))
             try:
                 query = self.query_entry.text().strip()
                 if query:
@@ -3117,8 +3137,8 @@ class ImageSearchApp(QMainWindow):
                 self._safe_after(100, action)
         else:
             self._safe_after(0, lambda: self.update_status("Video indexing complete", "green"))
-            self._safe_after(0, lambda: QMessageBox.information(
-                self, "Done", f"Video index complete.\n{n_videos:,} videos | {n_frames:,} frames"
+            self._safe_after(0, lambda v=n_videos, f=n_frames: self.show_info_bar(
+                f"Video index complete — {v:,} videos | {f:,} frames indexed."
             ))
             try:
                 query = self.query_entry.text().strip()
@@ -3746,18 +3766,14 @@ class ImageSearchApp(QMainWindow):
         self.scroll_area.verticalScrollBar().setValue(0)
 
     def _maybe_suggest_lower_score(self):
-        """Show a dismissable hint when search returns very few or no results"""
+        """Show an inline hint when search returns very few or no results."""
         current_score = self.score_slider.value() / 100.0
         if current_score > 0.05:
-            QMessageBox.information(
-                self,
-                "Few Results Found",
-                f"Only {self.total_found} result(s) found at similarity score {current_score:.2f}.\n\n"
-                f"Things to check:\n"
-                f"- Make sure the Image and/or Video filter buttons are enabled next to the Deselect All button\n"
-                f"- Try lowering the Similarity Score slider to find more matches\n"
-                f"  - Text search works well at 0.15-0.30\n"
-                f"  - Image search works well at 0.60-0.85"
+            self.show_info_bar(
+                f"Only {self.total_found} result(s) at score {current_score:.2f}. "
+                "Try lowering the Similarity Score slider "
+                "(text: 0.15–0.30 | image: 0.60–0.85) "
+                "or check that the Image/Video filter buttons are enabled."
             )
 
     def prev_page_results(self):
