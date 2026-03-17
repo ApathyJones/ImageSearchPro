@@ -300,6 +300,38 @@ BORDER = "#3c3c3c"
 
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
+# NudeNet label groups (ordered explicit → suggestive → body → face)
+NUDENET_LABEL_GROUPS = {
+    "Explicit": [
+        "FEMALE_GENITALIA_EXPOSED",
+        "MALE_GENITALIA_EXPOSED",
+        "ANUS_EXPOSED",
+    ],
+    "Nudity": [
+        "FEMALE_BREAST_EXPOSED",
+        "MALE_BREAST_EXPOSED",
+        "BUTTOCKS_EXPOSED",
+    ],
+    "Suggestive / Covered": [
+        "FEMALE_GENITALIA_COVERED",
+        "FEMALE_BREAST_COVERED",
+        "BUTTOCKS_COVERED",
+        "ANUS_COVERED",
+    ],
+    "Body Parts": [
+        "BELLY_EXPOSED",
+        "BELLY_COVERED",
+        "ARMPITS_EXPOSED",
+        "ARMPITS_COVERED",
+        "FEET_EXPOSED",
+        "FEET_COVERED",
+    ],
+    "Faces": [
+        "FACE_FEMALE",
+        "FACE_MALE",
+    ],
+}
+
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
 _DISK_LOCK = threading.Lock()
 
@@ -1561,6 +1593,11 @@ class ImageSearchApp(QMainWindow):
         btn_smart = QPushButton("Smart Albums")
         btn_smart.clicked.connect(self.on_smart_albums)
         toolbar_layout.addWidget(btn_smart)
+
+        btn_nsfw = QPushButton("NSFW Scan")
+        btn_nsfw.setToolTip("Scan indexed images with NudeNet (pip install nudenet)")
+        btn_nsfw.clicked.connect(self.on_nsfw_scan)
+        toolbar_layout.addWidget(btn_nsfw)
 
         self.status_label = QLabel("Starting...")
         self.status_label.setMinimumWidth(250)
@@ -4973,6 +5010,310 @@ class ImageSearchApp(QMainWindow):
         bottom_row.addWidget(close_btn)
         layout.addLayout(bottom_row)
         dlg.exec()
+
+
+    # ── NudeNet NSFW scanning ──────────────────────────────────────────────────
+
+    def on_nsfw_scan(self):
+        """Entry point: guard-check then open label selector."""
+        if not self.folder:
+            QMessageBox.warning(self, "No Folder", "Please select a folder first.")
+            return
+        if not self.image_paths:
+            QMessageBox.warning(self, "Not Indexed", "Please index a folder first.")
+            return
+        if self.is_indexing:
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
+            return
+        try:
+            from nudenet import NudeDetector  # noqa: F401
+        except ImportError:
+            QMessageBox.critical(self, "Missing Dependency",
+                "NudeNet is not installed.\n\nInstall with:\n    pip install nudenet")
+            return
+        self._open_nsfw_label_selector()
+
+    def _open_nsfw_label_selector(self):
+        """Dialog: choose which NudeNet labels to scan for."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("NSFW Scan — Select Labels")
+        dlg.resize(460, 580)
+        layout = QVBoxLayout(dlg)
+
+        header = QLabel(
+            "Select which NudeNet labels to detect.\n"
+            "Images will be grouped and sorted by the labels found."
+        )
+        header.setStyleSheet(f"background-color: {PANEL_BG}; padding: 6px;")
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setSpacing(2)
+        scroll.setWidget(content)
+        layout.addWidget(scroll, stretch=1)
+
+        checkboxes = {}
+        for group_name, labels in NUDENET_LABEL_GROUPS.items():
+            grp_lbl = QLabel(group_name)
+            grp_lbl.setStyleSheet(
+                f"color: {ACCENT}; font-weight: bold; font-size: 9pt; padding-top: 6px;")
+            content_layout.addWidget(grp_lbl)
+            # Default: check Explicit + Nudity; uncheck the rest
+            default_checked = group_name in ("Explicit", "Nudity")
+            for label in labels:
+                cb = QCheckBox("  " + label.replace("_", " ").title())
+                cb.setChecked(default_checked)
+                content_layout.addWidget(cb)
+                checkboxes[label] = cb
+        content_layout.addStretch()
+
+        # Select All / None row
+        sel_row = QHBoxLayout()
+        btn_all  = QPushButton("Select All")
+        btn_none = QPushButton("Select None")
+        btn_all.clicked.connect(lambda: [cb.setChecked(True)  for cb in checkboxes.values()])
+        btn_none.clicked.connect(lambda: [cb.setChecked(False) for cb in checkboxes.values()])
+        sel_row.addWidget(btn_all)
+        sel_row.addWidget(btn_none)
+        sel_row.addStretch()
+        layout.addLayout(sel_row)
+
+        btn_row = QHBoxLayout()
+        btn_run    = QPushButton("Run Scan")
+        btn_run.setProperty("class", "accent")
+        btn_cancel = QPushButton("Cancel")
+        btn_run.clicked.connect(dlg.accept)
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_run)
+        btn_row.addWidget(btn_cancel)
+        layout.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        selected = [lbl for lbl, cb in checkboxes.items() if cb.isChecked()]
+        if not selected:
+            QMessageBox.information(self, "No Labels Selected",
+                "Please select at least one label to scan for.")
+            return
+
+        import threading
+        threading.Thread(
+            target=self._nsfw_scan_worker, args=(selected,), daemon=True
+        ).start()
+
+    def _nsfw_scan_worker(self, selected_labels):
+        """Background thread: run NudeNet over all indexed images."""
+        try:
+            from nudenet import NudeDetector
+            detector = NudeDetector()
+
+            selected_set = set(selected_labels)
+            total = len(self.image_paths)
+            safe_print(f"[NSFW] Scanning {total:,} images for {len(selected_labels)} label(s)...")
+
+            self._safe_after(0, lambda: self.progress.setRange(0, total))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.update_status("Running NSFW scan...", "orange"))
+
+            # results_by_label: {label: [(abs_path, score), ...]} sorted by score desc
+            results_by_label = {lbl: [] for lbl in selected_labels}
+            # all_detections: {abs_path: [{"class": ..., "score": ...}, ...]}
+            all_detections = {}
+
+            for i, rel_path in enumerate(self.image_paths):
+                abs_path = os.path.join(self.folder, rel_path)
+                try:
+                    detections = detector.detect(get_safe_path(abs_path))
+                    matching = [d for d in detections if d["class"] in selected_set]
+                    if matching:
+                        all_detections[abs_path] = matching
+                        for d in matching:
+                            results_by_label[d["class"]].append((abs_path, float(d["score"])))
+                except Exception as det_err:
+                    safe_print(f"[NSFW] Skip {rel_path}: {det_err}")
+
+                if (i + 1) % 5 == 0 or i == total - 1:
+                    pct = i + 1
+                    self._safe_after(0, lambda p=pct: self.progress.setValue(p))
+                    self._safe_after(0, lambda p=pct, t=total:
+                        self.progress_label.setText(f"NSFW scan: {p:,} / {t:,}"))
+
+            # Sort each bucket highest confidence first
+            for lbl in results_by_label:
+                results_by_label[lbl].sort(key=lambda x: x[1], reverse=True)
+
+            # Drop empty buckets
+            results_by_label = {k: v for k, v in results_by_label.items() if v}
+
+            n_flagged = len(all_detections)
+            safe_print(f"[NSFW] Done. {n_flagged:,} image(s) flagged, "
+                       f"{len(results_by_label)} label bucket(s).")
+
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+            self._safe_after(0, lambda: self.update_status(
+                f"NSFW scan done: {n_flagged:,} image(s) flagged",
+                "green" if n_flagged == 0 else "orange"))
+            self._safe_after(0, lambda r=results_by_label, a=all_detections:
+                self._open_nsfw_results_dialog(r, a))
+
+        except Exception as e:
+            safe_print(f"[NSFW] Error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+            self._safe_after(0, lambda: self.update_status("NSFW scan failed", "red"))
+
+    def _open_nsfw_results_dialog(self, results_by_label, all_detections):
+        """Show bucketed scan results grouped by label, sorted by confidence."""
+        if not results_by_label:
+            QMessageBox.information(self, "NSFW Scan",
+                "No flagged images found for the selected labels.")
+            return
+
+        total_flagged = len(all_detections)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"NSFW Scan Results — {total_flagged:,} image(s) flagged")
+        dlg.resize(980, 720)
+        layout = QVBoxLayout(dlg)
+
+        header = QLabel(
+            f"{total_flagged:,} image(s) flagged across {len(results_by_label)} label bucket(s). "
+            "Buckets are ordered by severity. An image may appear in multiple buckets. "
+            "Click a bucket's button to browse those images sorted by confidence score."
+        )
+        header.setWordWrap(True)
+        header.setStyleSheet(f"background-color: {PANEL_BG}; padding: 6px;")
+        layout.addWidget(header)
+
+        # ── View All Flagged ──────────────────────────────────────────────────
+        top_row = QHBoxLayout()
+        btn_view_all = QPushButton(f"View All Flagged  ({total_flagged:,} images) →")
+        btn_view_all.setProperty("class", "accent")
+
+        def _view_all():
+            dlg.accept()
+            scored = sorted(
+                ((max(d["score"] for d in dets), path)
+                 for path, dets in all_detections.items()),
+                reverse=True,
+            )
+            self._nsfw_load_results(
+                [(score, path, "image", {}) for score, path in scored],
+                "All Flagged Images"
+            )
+
+        btn_view_all.clicked.connect(lambda _: _view_all())
+        top_row.addStretch()
+        top_row.addWidget(btn_view_all)
+        layout.addLayout(top_row)
+
+        # ── Label bucket grid ─────────────────────────────────────────────────
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        grid_widget = QWidget()
+        grid_layout = QGridLayout(grid_widget)
+        grid_layout.setSpacing(10)
+        scroll.setWidget(grid_widget)
+        layout.addWidget(scroll, stretch=1)
+
+        THUMB_SIZE = (160, 160)
+        COLS = 4
+
+        # Build display order: iterate label groups so explicit appears first
+        ordered_labels = [
+            lbl
+            for group_labels in NUDENET_LABEL_GROUPS.values()
+            for lbl in group_labels
+            if lbl in results_by_label
+        ]
+
+        for card_idx, label in enumerate(ordered_labels):
+            entries = results_by_label[label]   # [(abs_path, score), ...]
+            rep_path, rep_score = entries[0]     # highest-confidence image
+
+            row, col = divmod(card_idx, COLS)
+
+            card = QFrame()
+            card.setStyleSheet(
+                f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+            card_layout = QVBoxLayout(card)
+            card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+            # Representative thumbnail
+            try:
+                img = Image.open(get_safe_path(rep_path))
+                img.load()
+                img.thumbnail(THUMB_SIZE)
+                px = pil_to_pixmap(img)
+                thumb = QLabel()
+                thumb.setPixmap(px)
+                thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                card_layout.addWidget(thumb)
+            except Exception:
+                ph = QLabel("[preview unavailable]")
+                ph.setFixedSize(160, 80)
+                card_layout.addWidget(ph)
+
+            title_lbl = QLabel(label.replace("_", " ").title())
+            title_lbl.setStyleSheet(
+                f"color: {ACCENT_SECONDARY}; font-weight: bold;"
+                " font-size: 9pt; border: none;")
+            title_lbl.setWordWrap(True)
+            card_layout.addWidget(title_lbl)
+
+            info_lbl = QLabel(
+                f"{len(entries):,} image(s)  •  top score: {rep_score:.2f}")
+            info_lbl.setStyleSheet("border: none; font-size: 8pt;")
+            card_layout.addWidget(info_lbl)
+
+            def _view_bucket(lbl=label, ents=entries):
+                dlg.accept()
+                self._nsfw_load_results(
+                    [(score, path, "image", {}) for path, score in ents],
+                    lbl.replace("_", " ").title()
+                )
+
+            view_btn = QPushButton("View Images")
+            view_btn.clicked.connect(lambda _, fn=_view_bucket: fn())
+            card_layout.addWidget(view_btn)
+
+            grid_layout.addWidget(card, row, col)
+
+        # ── Close ─────────────────────────────────────────────────────────────
+        close_row = QHBoxLayout()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dlg.accept)
+        close_row.addStretch()
+        close_row.addWidget(close_btn)
+        layout.addLayout(close_row)
+
+        dlg.exec()
+
+    def _nsfw_load_results(self, album_results, title):
+        """Load a scored result list into the main results grid."""
+        self.cancel_search(clear_ui=True)
+        self.all_search_results = album_results
+        self.total_found = len(album_results)
+        self.show_more_offset = 0
+        self.update_status(f"{title}: {len(album_results):,} images", "green")
+        vp_width = self.scroll_area.viewport().width()
+        self.render_cols = max(1, max(vp_width, CELL_WIDTH) // CELL_WIDTH)
+        initial_n = max(10, self.top_n_slider.value() * 10)
+        first_batch = album_results[:initial_n]
+        self.show_more_offset = len(first_batch)
+        self.stop_search = False
+        self.is_searching = True
+        self.start_thumbnail_loader(first_batch, self.search_generation)
 
 
 if __name__ == "__main__":
