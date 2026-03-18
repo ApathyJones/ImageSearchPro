@@ -5277,7 +5277,6 @@ class ImageSearchApp(QMainWindow):
             grp_hdr_lbl = QLabel(f"Group {grp_idx + 1}  —  {len(group)} similar images")
             grp_hdr_lbl.setStyleSheet("font-weight: bold;")
             grp_hdr.addWidget(grp_hdr_lbl)
-            grp_hdr.addStretch()
 
             def _check_rest(g=group):
                 for k, (ap, _rp, _img) in enumerate(g):
@@ -5289,13 +5288,15 @@ class ImageSearchApp(QMainWindow):
                     if ap in action_vars:
                         action_vars[ap].setChecked(True)
 
-            keep_btn = QPushButton("Keep First, Check Rest")
-            keep_btn.clicked.connect(_check_rest)
-            grp_hdr.addWidget(keep_btn)
-
             all_btn = QPushButton("Select All in Group")
-            all_btn.clicked.connect(_check_all_in_group)
+            all_btn.clicked.connect(lambda _checked=False, g=group: _check_all_in_group(g))
             grp_hdr.addWidget(all_btn)
+
+            grp_hdr.addStretch()
+
+            keep_btn = QPushButton("Keep First, Check Rest")
+            keep_btn.clicked.connect(lambda _checked=False, g=group: _check_rest(g))
+            grp_hdr.addWidget(keep_btn)
             grp_layout.addLayout(grp_hdr)
 
             thumbs_row_widget = QWidget()
