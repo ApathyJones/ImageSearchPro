@@ -1494,6 +1494,51 @@ class ModelSelectorDialog(QDialog):
         self.accept()
 
 
+class FolderDropListWidget(QListWidget):
+    """QListWidget that accepts folder drag-and-drop from the OS file manager."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
+        self.setDefaultDropAction(Qt.DropAction.CopyAction)
+        self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.setToolTip("Drag folders here to add them")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            # Accept only if at least one URL is a local directory
+            if any(url.isLocalFile() and os.path.isdir(url.toLocalFile())
+                   for url in event.mimeData().urls()):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        existing = [self.item(i).text() for i in range(self.count())]
+        added = 0
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                path = url.toLocalFile()
+                if os.path.isdir(path) and path not in existing:
+                    self.addItem(path)
+                    existing.append(path)
+                    added += 1
+        if added:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class ImageSearchApp(QMainWindow):
     # Used by _safe_after to marshal arbitrary callables to the main thread.
     # Emitting from a background thread automatically uses a queued connection
@@ -2694,20 +2739,18 @@ class ImageSearchApp(QMainWindow):
         Returns a non-empty list of folder paths, or an empty list if cancelled.
         Pre-populates the list with any currently selected folders.
         """
-        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
-
         dlg = QDialog(self)
         dlg.setWindowTitle("Select Folders to Index")
-        dlg.resize(620, 380)
+        dlg.resize(620, 400)
         layout = QVBoxLayout(dlg)
 
         layout.addWidget(QLabel(
             "Add one or more folders. All selected folders will be indexed together.\n"
-            "The first folder is used to store the cache and settings files."
+            "The first folder is used to store the cache and settings files.\n"
+            "You can drag folders from your file manager and drop them into the list."
         ))
 
-        list_widget = QListWidget()
-        list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        list_widget = FolderDropListWidget()
         layout.addWidget(list_widget, stretch=1)
 
         # Pre-populate with currently selected folders
