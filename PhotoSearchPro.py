@@ -306,12 +306,15 @@ def _load_app_settings():
     except Exception:
         return {}
 
-def _save_app_settings(data):
-    try:
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-    except Exception as e:
-        safe_print(f"[SETTINGS] Save failed: {e}")
+def _load_saved_indexes():
+    """Return the list of saved index entries from settings, newest first."""
+    return _load_app_settings().get("saved_indexes", [])
+
+def _save_indexes_list(entries):
+    """Persist the saved index entries list to settings."""
+    settings = _load_app_settings()
+    settings["saved_indexes"] = entries
+    _save_app_settings(settings)
 
 # --- ONNX Toggle ---
 # Set USE_ONNX = True ONLY if PyTorch CUDA doesn't work on your GPU
@@ -2736,60 +2739,152 @@ class ImageSearchApp(QMainWindow):
     def _show_folder_picker_dialog(self):
         """Show a dialog that lets the user manage a list of folders to index.
 
+        Left panel  – saved indexes (load/delete).
+        Right panel – current folder set editor with drag-and-drop support.
+
         Returns a non-empty list of folder paths, or an empty list if cancelled.
-        Pre-populates the list with any currently selected folders.
+        Pre-populates the folder list with any currently selected folders.
         """
+        from PyQt6.QtWidgets import QSplitter, QListWidget
+        from datetime import datetime as _dt
+
         dlg = QDialog(self)
         dlg.setWindowTitle("Select Folders to Index")
-        dlg.resize(620, 400)
-        layout = QVBoxLayout(dlg)
+        dlg.resize(960, 480)
+        outer = QVBoxLayout(dlg)
+        outer.setContentsMargins(8, 8, 8, 8)
 
-        layout.addWidget(QLabel(
-            "Add one or more folders. All selected folders will be indexed together.\n"
-            "The first folder is used to store the cache and settings files.\n"
-            "You can drag folders from your file manager and drop them into the list."
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer.addWidget(splitter, stretch=1)
+
+        # ── Left panel: saved indexes ──────────────────────────────────────
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 4, 0)
+
+        saved_lbl = QLabel("Saved Indexes")
+        saved_lbl.setStyleSheet("font-weight: bold; font-size: 9pt;")
+        left_layout.addWidget(saved_lbl)
+
+        saved_list = QListWidget()
+        saved_list.setToolTip("Double-click or click Load to open a saved index")
+        left_layout.addWidget(saved_list, stretch=1)
+
+        saved_btn_row = QHBoxLayout()
+        load_btn  = QPushButton("Load")
+        del_btn   = QPushButton("Delete")
+        load_btn.setToolTip("Load the selected saved index into the editor")
+        del_btn.setToolTip("Remove this entry from the saved list")
+        saved_btn_row.addWidget(load_btn)
+        saved_btn_row.addWidget(del_btn)
+        saved_btn_row.addStretch()
+        left_layout.addLayout(saved_btn_row)
+
+        splitter.addWidget(left_widget)
+
+        # ── Right panel: folder editor ─────────────────────────────────────
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(4, 0, 0, 0)
+
+        right_layout.addWidget(QLabel(
+            "Add one or more folders — all are indexed together.\n"
+            "The first folder stores the cache and settings files.\n"
+            "Drag folders from your file manager and drop them into the list."
         ))
 
         list_widget = FolderDropListWidget()
-        layout.addWidget(list_widget, stretch=1)
+        right_layout.addWidget(list_widget, stretch=1)
 
-        # Pre-populate with currently selected folders
+        edit_btn_row = QHBoxLayout()
+        add_btn    = QPushButton("Add Folder…")
+        remove_btn = QPushButton("Remove Selected")
+        edit_btn_row.addWidget(add_btn)
+        edit_btn_row.addWidget(remove_btn)
+        edit_btn_row.addStretch()
+        right_layout.addLayout(edit_btn_row)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([300, 660])
+
+        # ── Populate saved list ────────────────────────────────────────────
+        saved_entries = _load_saved_indexes()
+
+        def _rebuild_saved_list():
+            saved_list.clear()
+            for entry in saved_entries:
+                folders = entry.get("folders", [])
+                name    = entry.get("name", folders[0] if folders else "?")
+                when    = entry.get("last_used", "")[:10]
+                extra   = f"  (+{len(folders)-1} more)" if len(folders) > 1 else ""
+                item_txt = f"{name}{extra}"
+                if when:
+                    item_txt += f"   [{when}]"
+                item = QListWidgetItem(item_txt)
+                item.setToolTip("\n".join(folders))
+                saved_list.addItem(item)
+
+        _rebuild_saved_list()
+
+        # ── Pre-populate folder editor ─────────────────────────────────────
         for f in self.folders:
             list_widget.addItem(f)
 
-        btn_row = QHBoxLayout()
+        # ── Helpers ────────────────────────────────────────────────────────
+        def _current_folders():
+            return [list_widget.item(i).text() for i in range(list_widget.count())]
 
         def add_folder():
-            start_dir = ""
-            if list_widget.count() > 0:
-                start_dir = list_widget.item(list_widget.count() - 1).text()
+            start_dir = list_widget.item(list_widget.count()-1).text() \
+                        if list_widget.count() > 0 else ""
             folder = QFileDialog.getExistingDirectory(dlg, "Add Folder", start_dir)
-            if folder:
-                existing = [list_widget.item(i).text() for i in range(list_widget.count())]
-                if folder not in existing:
-                    list_widget.addItem(folder)
+            if folder and folder not in _current_folders():
+                list_widget.addItem(folder)
 
         def remove_folder():
             row = list_widget.currentRow()
             if row >= 0:
                 list_widget.takeItem(row)
 
-        add_btn = QPushButton("Add Folder…")
-        remove_btn = QPushButton("Remove Selected")
+        def load_saved():
+            row = saved_list.currentRow()
+            if row < 0:
+                return
+            folders = saved_entries[row].get("folders", [])
+            list_widget.clear()
+            for f in folders:
+                list_widget.addItem(f)
+
+        def delete_saved():
+            row = saved_list.currentRow()
+            if row < 0:
+                return
+            entry = saved_entries[row]
+            name = entry.get("name", "this entry")
+            if QMessageBox.question(
+                dlg, "Remove Saved Index",
+                f'Remove "{name}" from the saved list?\n(Your actual files are not affected.)',
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            saved_entries.pop(row)
+            _save_indexes_list(saved_entries)
+            _rebuild_saved_list()
+
         add_btn.clicked.connect(add_folder)
         remove_btn.clicked.connect(remove_folder)
-        btn_row.addWidget(add_btn)
-        btn_row.addWidget(remove_btn)
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+        load_btn.clicked.connect(load_saved)
+        del_btn.clicked.connect(delete_saved)
+        saved_list.itemDoubleClicked.connect(lambda _: load_saved())
 
-        # Open a single-folder dialog immediately if the list is empty
+        # ── If no folders yet, open native picker immediately ──────────────
         if list_widget.count() == 0:
             folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
             if folder:
                 list_widget.addItem(folder)
 
-        ok_btn = QPushButton("OK")
+        # ── Bottom OK / Cancel ─────────────────────────────────────────────
+        ok_btn     = QPushButton("OK")
         ok_btn.setProperty("class", "accent")
         cancel_btn = QPushButton("Cancel")
 
@@ -2806,12 +2901,28 @@ class ImageSearchApp(QMainWindow):
         bottom_row.addStretch()
         bottom_row.addWidget(ok_btn)
         bottom_row.addWidget(cancel_btn)
-        layout.addLayout(bottom_row)
+        outer.addLayout(bottom_row)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return []
 
-        return [list_widget.item(i).text() for i in range(list_widget.count())]
+        return _current_folders()
+
+    def _persist_index_entry(self, folders):
+        """Save (or refresh) a folder-set entry in the saved indexes list."""
+        from datetime import datetime as _dt
+        entries = _load_saved_indexes()
+        # Remove any existing entry with the same folder set
+        entries = [e for e in entries if e.get("folders") != folders]
+        name = os.path.basename(folders[0]) if folders else "Index"
+        new_entry = {
+            "name": name,
+            "folders": folders,
+            "last_used": _dt.now().strftime("%Y-%m-%d %H:%M"),
+        }
+        entries.insert(0, new_entry)
+        # Keep at most 20 entries
+        _save_indexes_list(entries[:20])
 
     def select_folder(self):
         if self.clip_model is None:
@@ -2844,6 +2955,10 @@ class ImageSearchApp(QMainWindow):
         self.load_search_history()
         self._load_face_data()
         safe_print(f"\n{'='*60}\n[FOLDERS] {new_folders}")
+
+        # Persist this folder set in the saved indexes list (most-recent first,
+        # deduplicated by folder list, capped at 20 entries).
+        self._persist_index_entry(new_folders)
 
         # Update file-system watcher to track all selected folders
         existing_watched = self._fs_watcher.directories()
