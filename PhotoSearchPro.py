@@ -326,6 +326,13 @@ def _load_app_settings():
     except Exception:
         return {}
 
+def _save_app_settings(data):
+    try:
+        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        safe_print(f"[SETTINGS] Save failed: {e}")
+
 def _load_saved_indexes():
     """Return the list of saved index entries from settings, newest first."""
     return _load_app_settings().get("saved_indexes", [])
