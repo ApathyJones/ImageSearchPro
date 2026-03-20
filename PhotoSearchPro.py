@@ -1124,7 +1124,16 @@ class DinoBackendModel:
 
         if model_cfg.get("requires_hf_auth"):
             safe_print(f"[MODEL] NOTE: {dino_name} is a gated HuggingFace model.")
-            safe_print(f"[MODEL]       If loading fails, run:  hf auth login")
+            _hf_tok = os.environ.get("HF_TOKEN", "")
+            if _hf_tok:
+                try:
+                    import huggingface_hub as _hfh
+                    _hfh.login(token=_hf_tok, add_to_git_credential=False)
+                    safe_print(f"[MODEL] HuggingFace authentication OK")
+                except Exception as _auth_err:
+                    safe_print(f"[MODEL] HF auth warning: {_auth_err}")
+            else:
+                safe_print(f"[MODEL] WARNING: No HF token found — use the 'HF Token' button to add one.")
 
         # dinotool calls AutoModel.from_pretrained() with no torch_dtype, so weights
         # default to float32 (~28 GB for a 7B model).  We patch from_pretrained at
@@ -1138,9 +1147,12 @@ class DinoBackendModel:
                 import transformers as _tf
                 _orig_func = _tf.AutoModel.from_pretrained.__func__
                 _cast = cast_dtype  # capture for closure
+                _tok  = os.environ.get("HF_TOKEN") or None
                 @classmethod
                 def _fp_patched(cls, *args, **kwargs):
                     kwargs.setdefault('torch_dtype', _cast)
+                    if _tok:
+                        kwargs.setdefault('token', _tok)
                     return _orig_func(cls, *args, **kwargs)
                 _tf.AutoModel.from_pretrained = _fp_patched
                 _restore_fp.append((_tf, _orig_func))
@@ -1591,6 +1603,11 @@ class ImageSearchApp(QMainWindow):
         _hf_token = _settings.get("hf_token", "")
         if _hf_token and not os.environ.get("HF_TOKEN"):
             os.environ["HF_TOKEN"] = _hf_token
+            try:
+                import huggingface_hub as _hfh
+                _hfh.login(token=_hf_token, add_to_git_credential=False)
+            except Exception:
+                pass
 
         self.active_model_key = _settings.get("model_key", DEFAULT_MODEL_KEY)
         if self.active_model_key not in MODEL_REGISTRY:
@@ -2526,6 +2543,11 @@ class ImageSearchApp(QMainWindow):
         if token:
             settings["hf_token"] = token
             os.environ["HF_TOKEN"] = token
+            try:
+                import huggingface_hub as _hfh
+                _hfh.login(token=token, add_to_git_credential=False)
+            except Exception:
+                pass
             QMessageBox.information(self, "Token Saved",
                 "HuggingFace token saved.\n"
                 "It will be applied automatically on every launch.")
