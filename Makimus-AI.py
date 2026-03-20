@@ -1522,9 +1522,10 @@ class ImageSearchApp(QMainWindow):
             self.active_model_key = DEFAULT_MODEL_KEY
         self.model_has_text = MODEL_REGISTRY[self.active_model_key]["has_text"]
 
-        self.folder = None
+        self.folder = None      # primary folder (for cache / exclusions / history)
+        self.folders = []       # all selected folders (including primary)
         self.cache_file = None
-        self.image_paths = []  # NOW STORES RELATIVE PATHS
+        self.image_paths = []  # NOW STORES ABSOLUTE PATHS
         self.image_embeddings = None
         self.thumbnail_images = {}
         self.selected_images = set()
@@ -1633,9 +1634,21 @@ class ImageSearchApp(QMainWindow):
             return None
         return os.path.join(self.folder, ".clip_exclusions.json")
 
-    def _is_excluded(self, rel_path):
+    def _is_excluded(self, path):
         if not self.excluded_folders:
             return False
+        # Derive relative path from whichever base folder the path belongs to.
+        # If path is already relative (old callers) or doesn't match any folder,
+        # use it as-is so pattern matching still works.
+        rel_path = path
+        for base in (self.folders if self.folders else ([self.folder] if self.folder else [])):
+            try:
+                candidate = os.path.relpath(path, base).replace('\\', '/')
+                if not candidate.startswith('..'):
+                    rel_path = candidate
+                    break
+            except ValueError:
+                pass
         normalized = rel_path.replace(os.sep, "/")
         return any(pattern in normalized for pattern in self.excluded_folders)
 
@@ -1678,7 +1691,7 @@ class ImageSearchApp(QMainWindow):
         toolbar_layout.setContentsMargins(4, 4, 4, 4)
         toolbar_layout.setSpacing(4)
 
-        self.btn_folder = QPushButton("Folder")
+        self.btn_folder = QPushButton("Folders")
         self.btn_folder.clicked.connect(self.on_select_folder)
         toolbar_layout.addWidget(self.btn_folder)
 
@@ -2356,10 +2369,11 @@ class ImageSearchApp(QMainWindow):
     # ---- Feature: Auto-incremental index via file-system watcher ----
 
     def _on_auto_update_toggled(self, checked):
-        """Enable or disable the file-system watcher for the current folder."""
-        if checked and self.folder:
-            self._fs_watcher.addPath(self.folder)
-            safe_print(f"[WATCHER] Watching: {self.folder}")
+        """Enable or disable the file-system watcher for all selected folders."""
+        if checked and self.folders:
+            for f in self.folders:
+                self._fs_watcher.addPath(f)
+            safe_print(f"[WATCHER] Watching: {self.folders}")
         else:
             paths = self._fs_watcher.directories()
             if paths:
@@ -2674,42 +2688,128 @@ class ImageSearchApp(QMainWindow):
             self.update_status("Search Cancelled", "orange")
         self.is_searching = False
 
+    def _show_folder_picker_dialog(self):
+        """Show a dialog that lets the user manage a list of folders to index.
+
+        Returns a non-empty list of folder paths, or an empty list if cancelled.
+        Pre-populates the list with any currently selected folders.
+        """
+        from PyQt6.QtWidgets import QListWidget, QListWidgetItem
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Select Folders to Index")
+        dlg.resize(620, 380)
+        layout = QVBoxLayout(dlg)
+
+        layout.addWidget(QLabel(
+            "Add one or more folders. All selected folders will be indexed together.\n"
+            "The first folder is used to store the cache and settings files."
+        ))
+
+        list_widget = QListWidget()
+        list_widget.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        layout.addWidget(list_widget, stretch=1)
+
+        # Pre-populate with currently selected folders
+        for f in self.folders:
+            list_widget.addItem(f)
+
+        btn_row = QHBoxLayout()
+
+        def add_folder():
+            start_dir = ""
+            if list_widget.count() > 0:
+                start_dir = list_widget.item(list_widget.count() - 1).text()
+            folder = QFileDialog.getExistingDirectory(dlg, "Add Folder", start_dir)
+            if folder:
+                existing = [list_widget.item(i).text() for i in range(list_widget.count())]
+                if folder not in existing:
+                    list_widget.addItem(folder)
+
+        def remove_folder():
+            row = list_widget.currentRow()
+            if row >= 0:
+                list_widget.takeItem(row)
+
+        add_btn = QPushButton("Add Folder…")
+        remove_btn = QPushButton("Remove Selected")
+        add_btn.clicked.connect(add_folder)
+        remove_btn.clicked.connect(remove_folder)
+        btn_row.addWidget(add_btn)
+        btn_row.addWidget(remove_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        # Open a single-folder dialog immediately if the list is empty
+        if list_widget.count() == 0:
+            folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
+            if folder:
+                list_widget.addItem(folder)
+
+        ok_btn = QPushButton("OK")
+        ok_btn.setProperty("class", "accent")
+        cancel_btn = QPushButton("Cancel")
+
+        def on_ok():
+            if list_widget.count() == 0:
+                QMessageBox.warning(dlg, "No Folder", "Please add at least one folder.")
+                return
+            dlg.accept()
+
+        ok_btn.clicked.connect(on_ok)
+        cancel_btn.clicked.connect(dlg.reject)
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
+        bottom_row.addWidget(ok_btn)
+        bottom_row.addWidget(cancel_btn)
+        layout.addLayout(bottom_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return []
+
+        return [list_widget.item(i).text() for i in range(list_widget.count())]
+
     def select_folder(self):
         if self.clip_model is None:
             QMessageBox.warning(self, "Wait", "Model is still loading...")
             return
-        
-        # Show dialog FIRST — don't wipe anything until user confirms a new folder
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder")
-        if not folder:
+
+        # Show multi-folder picker — don't wipe anything until user confirms
+        new_folders = self._show_folder_picker_dialog()
+        if not new_folders:
             self.update_status("No folder selected", "orange")
             return
-        
-        # User confirmed a new folder — now safe to wipe old data
+        folder = new_folders[0]  # primary folder
+
+        # User confirmed — now safe to wipe old data
         self.image_paths = []
         self.image_embeddings = None
         self.folder = None
+        self.folders = []
         self.cache_file = None
         self.video_paths = []
         self.video_embeddings = None
         self.video_cache_file = None
         self.clear_results()
         self.update_stats()
-        
+
         self.folder = folder
+        self.folders = new_folders
         self.excluded_folders = set()
         self.load_exclusions()
         self.load_search_history()
         self._load_face_data()
-        safe_print(f"\n{'='*60}\n[FOLDER] {folder}")
+        safe_print(f"\n{'='*60}\n[FOLDERS] {new_folders}")
 
-        # Update file-system watcher to track the new folder
+        # Update file-system watcher to track all selected folders
         existing_watched = self._fs_watcher.directories()
         if existing_watched:
             self._fs_watcher.removePaths(existing_watched)
         if self.auto_update_cb.isChecked():
-            self._fs_watcher.addPath(folder)
-            safe_print(f"[WATCHER] Now watching: {folder}")
+            for f in new_folders:
+                self._fs_watcher.addPath(f)
+            safe_print(f"[WATCHER] Now watching: {new_folders}")
         
         cache_files = self.get_cache_filename()
         found_cache = None
@@ -2779,21 +2879,31 @@ class ImageSearchApp(QMainWindow):
         try:
             safe_print(f"[CACHE] Loading: {cache_path}")
             self.update_status("Loading cache from disk...", "orange")
-            
+
             with open(cache_path, "rb") as f:
                 data = pickle.load(f)
-                # New format: (relative_paths, embeddings)
+                # Format: (paths_list, embeddings)
                 self.image_paths, self.image_embeddings = data
 
-            # Normalize to forward slashes — makes cache cross-platform (Windows/Linux/Mac)
+            # Normalize separators
             self.image_paths = [p.replace('\\', '/') for p in self.image_paths]
+
+            # Backward compat: old caches stored RELATIVE paths; convert to absolute
+            if self.image_paths and not os.path.isabs(self.image_paths[0]):
+                base = os.path.dirname(cache_path)
+                self.image_paths = [
+                    os.path.join(base, p).replace('\\', '/') for p in self.image_paths
+                ]
+                safe_print("[CACHE] Converted relative paths → absolute (backward compat)")
 
             if hasattr(self.image_embeddings, 'cpu'):
                 self.image_embeddings = self.image_embeddings.cpu().numpy()
-            
+
             self.cache_file = cache_path
             self.folder = os.path.dirname(cache_path)
-            
+            if self.folder not in self.folders:
+                self.folders = [self.folder] + [f for f in self.folders if f != self.folder]
+
             self.load_exclusions()
             self.update_stats()
             n_imgs = len(self.image_paths)
@@ -2802,7 +2912,7 @@ class ImageSearchApp(QMainWindow):
                 self.update_status(f"Loaded {n_imgs:,} images, {n_vids:,} videos", "green")
             else:
                 self.update_status(f"Loaded {n_imgs:,} images", "green")
-            safe_print(f"[CACHE] Success. {n_imgs:,} images (relative paths).")
+            safe_print(f"[CACHE] Success. {n_imgs:,} images (absolute paths).")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Load failed: {e}")
             self.update_status("Cache load failed", "red")
@@ -2814,8 +2924,17 @@ class ImageSearchApp(QMainWindow):
                 data = pickle.load(f)
                 self.video_paths, self.video_embeddings = data
 
-            # Normalize to forward slashes — cross-platform compatibility
+            # Normalize separators
             self.video_paths = [(vp.replace('\\', '/'), ts) for vp, ts in self.video_paths]
+
+            # Backward compat: old caches stored RELATIVE paths; convert to absolute
+            if self.video_paths and not os.path.isabs(self.video_paths[0][0]):
+                base = os.path.dirname(cache_path)
+                self.video_paths = [
+                    (os.path.join(base, vp).replace('\\', '/'), ts)
+                    for vp, ts in self.video_paths
+                ]
+                safe_print("[VCACHE] Converted relative paths → absolute (backward compat)")
 
             if hasattr(self.video_embeddings, 'cpu'):
                 self.video_embeddings = self.video_embeddings.cpu().numpy()
@@ -2872,25 +2991,28 @@ class ImageSearchApp(QMainWindow):
                 except:
                     pass
         
-        safe_print("\n[SCAN] Scanning folder for changes...")
+        safe_print("\n[SCAN] Scanning folder(s) for changes...")
         self._safe_after(0, lambda: self.update_status("Scanning folder...", "orange"))
-        
-        current_disk_files = set()
+
+        current_disk_files = set()  # absolute paths currently on disk
         new_files_to_add = []
 
-        existing_paths_set = set(self.image_paths)
-        
-        for root, _, files in os.walk(self.folder):
-            if self.stop_indexing: break
-            for f in files:
-                if f.lower().endswith(IMAGE_EXTS):
-                    abs_path = os.path.join(root, f)
-                    rel_path = os.path.relpath(abs_path, self.folder).replace('\\', '/')
-                    if self._is_excluded(rel_path):
-                        continue
-                    current_disk_files.add(rel_path)
-                    if rel_path not in existing_paths_set:
-                        new_files_to_add.append(abs_path)
+        existing_paths_set = set(self.image_paths)  # already absolute
+
+        for scan_folder in (self.folders if self.folders else [self.folder]):
+            if self.stop_indexing:
+                break
+            for root, _, files in os.walk(scan_folder):
+                if self.stop_indexing:
+                    break
+                for f in files:
+                    if f.lower().endswith(IMAGE_EXTS):
+                        abs_path = os.path.join(root, f)
+                        if self._is_excluded(abs_path):
+                            continue
+                        current_disk_files.add(abs_path)
+                        if abs_path not in existing_paths_set:
+                            new_files_to_add.append(abs_path)
         
         if self.stop_indexing:
             self._handle_stop()
@@ -2899,11 +3021,11 @@ class ImageSearchApp(QMainWindow):
         safe_print("[SCAN] Pruning deleted/renamed files...")
         valid_indices = []
         pruned_paths = []
-        
-        for i, rel_path in enumerate(self.image_paths):
-            if rel_path in current_disk_files:
+
+        for i, abs_path in enumerate(self.image_paths):
+            if abs_path in current_disk_files:
                 valid_indices.append(i)
-                pruned_paths.append(rel_path)
+                pruned_paths.append(abs_path)
         
         removed_count = len(self.image_paths) - len(valid_indices)
         
@@ -2950,14 +3072,17 @@ class ImageSearchApp(QMainWindow):
         self.image_embeddings = None
         
         all_images = []
-        for root, _, files in os.walk(self.folder):
-            if self.stop_indexing: break
-            for f in files:
-                if f.lower().endswith(IMAGE_EXTS):
-                    abs_path = os.path.join(root, f)
-                    rel_path = os.path.relpath(abs_path, self.folder).replace('\\', '/')
-                    if not self._is_excluded(rel_path):
-                        all_images.append(abs_path)
+        for scan_folder in (self.folders if self.folders else [self.folder]):
+            if self.stop_indexing:
+                break
+            for root, _, files in os.walk(scan_folder):
+                if self.stop_indexing:
+                    break
+                for f in files:
+                    if f.lower().endswith(IMAGE_EXTS):
+                        abs_path = os.path.join(root, f)
+                        if not self._is_excluded(abs_path):
+                            all_images.append(abs_path)
         
         if self.stop_indexing:
             self.image_paths = old_paths
@@ -3053,10 +3178,10 @@ class ImageSearchApp(QMainWindow):
                         if feats is not None and feats.size > 0:
                             nf, np_ = [], []
                             for i2, ap in enumerate(buf_paths):
-                                rp = os.path.relpath(ap, self.folder).replace('\\', '/')
-                                if rp not in existing_paths_set:
-                                    np_.append(rp); nf.append(feats[i2])
-                                    existing_paths_set.add(rp)
+                                # Store absolute path directly
+                                if ap not in existing_paths_set:
+                                    np_.append(ap); nf.append(feats[i2])
+                                    existing_paths_set.add(ap)
                             if np_:
                                 self.image_paths.extend(np_)
                                 self._pending_image_batches.append(np.array(nf))
@@ -3191,7 +3316,7 @@ class ImageSearchApp(QMainWindow):
                         torch.cuda.empty_cache()
 
             def extract_frames(abs_video_path):
-                rel_path = os.path.relpath(abs_video_path, self.folder).replace('\\', '/')
+                rel_path = abs_video_path  # Store absolute path in video_paths tuples
                 safe_print(f"[VINDEX] Analyzing: {os.path.basename(abs_video_path)}")
                 frames = []
                 cap = None
@@ -3378,15 +3503,17 @@ class ImageSearchApp(QMainWindow):
         self.video_embeddings = None
 
         all_videos = []
-        for root_dir, _, files in os.walk(self.folder):
+        for scan_folder in (self.folders if self.folders else [self.folder]):
             if self.stop_indexing:
                 break
-            for f in files:
-                if f.lower().endswith(VIDEO_EXTS):
-                    abs_path = os.path.join(root_dir, f)
-                    rel_path = os.path.relpath(abs_path, self.folder).replace('\\', '/')
-                    if not self._is_excluded(rel_path):
-                        all_videos.append(abs_path)
+            for root_dir, _, files in os.walk(scan_folder):
+                if self.stop_indexing:
+                    break
+                for f in files:
+                    if f.lower().endswith(VIDEO_EXTS):
+                        abs_path = os.path.join(root_dir, f)
+                        if not self._is_excluded(abs_path):
+                            all_videos.append(abs_path)
 
         if self.stop_indexing:
             self.video_paths = old_video_paths
@@ -3416,25 +3543,27 @@ class ImageSearchApp(QMainWindow):
                 except:
                     pass
 
-        safe_print("\n[VSCAN] Scanning folder for video changes...")
+        safe_print("\n[VSCAN] Scanning folder(s) for video changes...")
         self._safe_after(0, lambda: self.update_status("Scanning for video changes...", "orange"))
 
-        current_disk_videos = set()
+        current_disk_videos = set()  # absolute paths
         new_videos_to_add = []
+        existing_video_set = set(vp for vp, _ in self.video_paths)
 
-        for root_dir, _, files in os.walk(self.folder):
+        for scan_folder in (self.folders if self.folders else [self.folder]):
             if self.stop_indexing:
                 break
-            for f in files:
-                if f.lower().endswith(VIDEO_EXTS):
-                    abs_path = os.path.join(root_dir, f)
-                    rel_path = os.path.relpath(abs_path, self.folder).replace('\\', '/')
-                    if self._is_excluded(rel_path):
-                        continue
-                    current_disk_videos.add(rel_path)
-                    already_indexed = any(vp == rel_path for vp, _ in self.video_paths)
-                    if not already_indexed:
-                        new_videos_to_add.append(abs_path)
+            for root_dir, _, files in os.walk(scan_folder):
+                if self.stop_indexing:
+                    break
+                for f in files:
+                    if f.lower().endswith(VIDEO_EXTS):
+                        abs_path = os.path.join(root_dir, f)
+                        if self._is_excluded(abs_path):
+                            continue
+                        current_disk_videos.add(abs_path)
+                        if abs_path not in existing_video_set:
+                            new_videos_to_add.append(abs_path)
 
         if self.stop_indexing:
             self._handle_video_stop()
@@ -3519,7 +3648,7 @@ class ImageSearchApp(QMainWindow):
             safe_print(f"[LOG] Could not write failed log: {e}")
 
     def _save_cache(self, allow_shrink=False):
-        """Save cache with RELATIVE paths — never overwrites a larger existing cache."""
+        """Save cache with ABSOLUTE paths — never overwrites a larger existing cache."""
         if self.image_embeddings is not None and len(self.image_paths) > 0:
             try:
                 if not allow_shrink and os.path.exists(self.cache_file):
@@ -3540,7 +3669,7 @@ class ImageSearchApp(QMainWindow):
                 if os.path.exists(self.cache_file):
                     os.remove(self.cache_file)
                 os.rename(temp_file, self.cache_file)
-                safe_print(f"[CACHE] Saved {len(self.image_paths)} relative paths to {self.cache_file}")
+                safe_print(f"[CACHE] Saved {len(self.image_paths)} absolute paths to {self.cache_file}")
             except Exception as e:
                 safe_print(f"[CACHE] Save Error: {e}")
 
@@ -3968,9 +4097,8 @@ class ImageSearchApp(QMainWindow):
                     sims_img = sims_img - (self.image_embeddings @ neg_embed.T).flatten()
                 above = np.where(sims_img >= min_score)[0]
                 for i in above:
-                    rel_path = self.image_paths[i]
-                    if not self._is_excluded(rel_path):
-                        abs_path = os.path.join(self.folder, rel_path)
+                    abs_path = self.image_paths[i]  # already absolute
+                    if not self._is_excluded(abs_path):
                         all_results.append((float(sims_img[i]), abs_path, "image", {}))
 
             if show_videos and self.video_embeddings is not None and len(self.video_paths) > 0:
@@ -3979,9 +4107,8 @@ class ImageSearchApp(QMainWindow):
                     sims_vid = sims_vid - (self.video_embeddings @ neg_embed.T).flatten()
                 above_v = np.where(sims_vid >= min_score)[0]
                 for i in above_v:
-                    rel_vid_path, timestamp = self.video_paths[i]
-                    if not self._is_excluded(rel_vid_path):
-                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                    abs_vid_path, timestamp = self.video_paths[i]  # already absolute
+                    if not self._is_excluded(abs_vid_path):
                         all_results.append((float(sims_vid[i]), abs_vid_path, "video", {"timestamp": timestamp}))
 
             safe_print(f"[SEARCH] Found {len(all_results)} total results")
@@ -4058,17 +4185,15 @@ class ImageSearchApp(QMainWindow):
                 sims_img = (self.image_embeddings @ emb).flatten()
                 above = np.where(sims_img >= min_score)[0]
                 for i in above:
-                    rel_path = self.image_paths[i]
-                    if not self._is_excluded(rel_path):
-                        abs_path = os.path.join(self.folder, rel_path)
+                    abs_path = self.image_paths[i]  # already absolute
+                    if not self._is_excluded(abs_path):
                         all_results.append((float(sims_img[i]), abs_path, "image", {}))
             if show_videos and self.video_embeddings is not None:
                 sims_vid = (self.video_embeddings @ emb).flatten()
                 above_v = np.where(sims_vid >= min_score)[0]
                 for i in above_v:
-                    rel_vid_path, timestamp = self.video_paths[i]
-                    if not self._is_excluded(rel_vid_path):
-                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                    abs_vid_path, timestamp = self.video_paths[i]  # already absolute
+                    if not self._is_excluded(abs_vid_path):
                         all_results.append((float(sims_vid[i]), abs_vid_path, "video", {"timestamp": timestamp}))
             if all_results:
                 if self.dedup_video_cb.isChecked():
@@ -4126,18 +4251,16 @@ class ImageSearchApp(QMainWindow):
                 sims_img = (self.image_embeddings @ emb).flatten()
                 above = np.where(sims_img >= min_score)[0]
                 for i in above:
-                    rel_path = self.image_paths[i]
-                    if not self._is_excluded(rel_path):
-                        abs_path = os.path.join(self.folder, rel_path)
+                    abs_path = self.image_paths[i]  # already absolute
+                    if not self._is_excluded(abs_path):
                         all_results.append((float(sims_img[i]), abs_path, "image", {}))
 
             if show_videos and self.video_embeddings is not None:
                 sims_vid = (self.video_embeddings @ emb).flatten()
                 above_v = np.where(sims_vid >= min_score)[0]
                 for i in above_v:
-                    rel_vid_path, timestamp = self.video_paths[i]
-                    if not self._is_excluded(rel_vid_path):
-                        abs_vid_path = os.path.join(self.folder, rel_vid_path)
+                    abs_vid_path, timestamp = self.video_paths[i]  # already absolute
+                    if not self._is_excluded(abs_vid_path):
                         all_results.append((float(sims_vid[i]), abs_vid_path, "video", {"timestamp": timestamp}))
 
             if all_results:
@@ -4541,19 +4664,14 @@ class ImageSearchApp(QMainWindow):
         QTimer.singleShot(50, lambda: self._reflow_grid())
 
     def _remove_paths_from_index(self, abs_paths):
-        if not self.folder:
+        if not self.folder and not self.folders:
             return
-        rel_to_remove = set()
-        for p in abs_paths:
-            try:
-                rel_to_remove.add(os.path.relpath(p, self.folder).replace('\\', '/'))
-            except ValueError:
-                pass
-
-        if not rel_to_remove:
+        paths_to_remove = set(abs_paths)
+        if not paths_to_remove:
             return
 
-        keep_indices = [i for i, rp in enumerate(self.image_paths) if rp not in rel_to_remove]
+        # image_paths now stores absolute paths directly
+        keep_indices = [i for i, p in enumerate(self.image_paths) if p not in paths_to_remove]
         self.image_paths = [self.image_paths[i] for i in keep_indices]
         if self.image_embeddings is not None:
             if keep_indices:
@@ -4562,8 +4680,8 @@ class ImageSearchApp(QMainWindow):
                 self.image_embeddings = None
         self._save_cache(allow_shrink=True)
 
-        if self.video_paths and rel_to_remove:
-            keep_video = [i for i, (vp, _) in enumerate(self.video_paths) if vp not in rel_to_remove]
+        if self.video_paths and paths_to_remove:
+            keep_video = [i for i, (vp, _) in enumerate(self.video_paths) if vp not in paths_to_remove]
             if len(keep_video) < len(self.video_paths):
                 if self.video_embeddings is not None:
                     self.video_embeddings = self.video_embeddings[keep_video] if keep_video else None
@@ -4766,7 +4884,10 @@ class ImageSearchApp(QMainWindow):
                 f"{len(errors)} file(s) could not be deleted:\n\n" + "\n".join(errors[:8]))
 
     def show_index_info(self):
-        folder_str = self.folder if self.folder else "No folder selected"
+        if self.folders and len(self.folders) > 1:
+            folder_str = f"{self.folders[0]}  (+{len(self.folders)-1} more)"
+        else:
+            folder_str = self.folder if self.folder else "No folder selected"
         cache_str = self.cache_file if self.cache_file else "No cache loaded"
 
         cache_size_str = "N/A"
@@ -5201,11 +5322,10 @@ class ImageSearchApp(QMainWindow):
             for group in dup_groups:
                 members = []
                 for img_idx in group:
-                    rel_path = self.image_paths[img_idx]
-                    abs_path = os.path.join(self.folder, rel_path)
+                    abs_path = self.image_paths[img_idx]  # already absolute
                     pil_img = None
                     try:
-                        if rel_path.lower().endswith(RAW_EXTS):
+                        if abs_path.lower().endswith(RAW_EXTS):
                             import rawpy
                             with rawpy.imread(abs_path) as raw:
                                 rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
@@ -5217,7 +5337,7 @@ class ImageSearchApp(QMainWindow):
                         pil_img.thumbnail((150, 150))
                     except Exception:
                         pil_img = None
-                    members.append((abs_path, rel_path, pil_img))
+                    members.append((abs_path, abs_path, pil_img))
                 group_data.append(members)
 
             total_redundant = sum(len(g) - 1 for g in dup_groups)
@@ -5686,8 +5806,7 @@ class ImageSearchApp(QMainWindow):
 
         for idx, info in enumerate(cluster_info):
             rep_idx = info["representative"]
-            rel_path = self.image_paths[rep_idx]
-            abs_path = os.path.join(self.folder, rel_path)
+            abs_path = self.image_paths[rep_idx]  # already absolute
             row, col = divmod(idx, COLS)
 
             card = QFrame()
@@ -5696,7 +5815,7 @@ class ImageSearchApp(QMainWindow):
             card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
             try:
-                if rel_path.lower().endswith(RAW_EXTS):
+                if abs_path.lower().endswith(RAW_EXTS):
                     import rawpy
                     with rawpy.imread(abs_path) as raw:
                         rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
@@ -5727,7 +5846,7 @@ class ImageSearchApp(QMainWindow):
             def view_album(members=info["members"], album_num=idx + 1):
                 self.cancel_search(clear_ui=True)
                 album_results = [
-                    (1.0, os.path.join(self.folder, self.image_paths[i]), "image", {})
+                    (1.0, self.image_paths[i], "image", {})  # already absolute
                     for i in members
                 ]
                 self.all_search_results = album_results
@@ -5876,8 +5995,7 @@ class ImageSearchApp(QMainWindow):
             # all_detections: {abs_path: [{"class": ..., "score": ...}, ...]}
             all_detections = {}
 
-            for i, rel_path in enumerate(self.image_paths):
-                abs_path = os.path.join(self.folder, rel_path)
+            for i, abs_path in enumerate(self.image_paths):  # already absolute
                 try:
                     detections = detector.detect(get_safe_path(abs_path))
                     matching = [d for d in detections if d["class"] in selected_set]
@@ -5886,7 +6004,7 @@ class ImageSearchApp(QMainWindow):
                         for d in matching:
                             results_by_label[d["class"]].append((abs_path, float(d["score"])))
                 except Exception as det_err:
-                    safe_print(f"[NSFW] Skip {rel_path}: {det_err}")
+                    safe_print(f"[NSFW] Skip {abs_path}: {det_err}")
 
                 if (i + 1) % 5 == 0 or i == total - 1:
                     pct = i + 1
@@ -6474,14 +6592,8 @@ class ImageSearchApp(QMainWindow):
                             continue
                     else:
                         face_idx = 0
-                    # Store relative path when inside the indexed folder
-                    try:
-                        rel = os.path.relpath(path, self.folder)
-                        if rel.startswith(".."):
-                            rel = path
-                    except ValueError:
-                        rel = path
-                    self.face_presets[preset_name]["references"].append(rel)
+                    # Store absolute path for multi-folder compatibility
+                    self.face_presets[preset_name]["references"].append(path)
                     added += 1
                 except RuntimeError as e:
                     QMessageBox.critical(dlg, "Missing Dependency", str(e))
@@ -6520,10 +6632,9 @@ class ImageSearchApp(QMainWindow):
             n = len(self.image_paths)
             face_index = {}
             self._safe_after(0, lambda: self.progress.setRange(0, n))
-            for i, rel_path in enumerate(self.image_paths):
+            for i, abs_path in enumerate(self.image_paths):  # already absolute
                 if self.stop_search:
                     break
-                abs_path = os.path.join(self.folder, rel_path)
                 try:
                     pil_img = open_image(abs_path)
                     if pil_img is None:
@@ -6531,9 +6642,9 @@ class ImageSearchApp(QMainWindow):
                     img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
                     faces = app.get(img_bgr)
                     if faces:
-                        face_index[rel_path] = [f.embedding for f in faces]
+                        face_index[abs_path] = [f.embedding for f in faces]
                 except Exception as e:
-                    safe_print(f"[FACE] Error on {rel_path}: {e}")
+                    safe_print(f"[FACE] Error on {abs_path}: {e}")
                 if i % 20 == 0:
                     pct = i + 1
                     self._safe_after(0, lambda v=pct: self.progress.setValue(v))
@@ -6585,13 +6696,17 @@ class ImageSearchApp(QMainWindow):
         try:
             results = []
             norm_preset = preset_emb / (np.linalg.norm(preset_emb) + 1e-8)
-            for rel_path, face_embs in self.face_index.items():
+            for stored_path, face_embs in self.face_index.items():
                 best_sim = max(
                     float(np.dot(norm_preset, fe / (np.linalg.norm(fe) + 1e-8)))
                     for fe in face_embs
                 )
                 if best_sim >= threshold:
-                    abs_path = os.path.join(self.folder, rel_path)
+                    # stored_path may be absolute (new) or relative (old face index)
+                    if os.path.isabs(stored_path):
+                        abs_path = stored_path
+                    else:
+                        abs_path = os.path.join(self.folder, stored_path)
                     results.append((best_sim, abs_path, "image", {}))
             results.sort(key=lambda x: x[0], reverse=True)
             if not results:
