@@ -1,22 +1,22 @@
-# 🦉 Makimus-AI — AI Media Search
+# 🦉 PhotoSearchPro — AI Media Search
 
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
-Search your entire image and video library using **natural language or an image** — type what you're looking for or drop an image, and Makimus-AI instantly finds matching results using AI. Works on photos, RAW files, and **videos**.
+Search your entire image and video library using **natural language or an image** — type what you're looking for or drop an image, and PhotoSearchPro instantly finds matching results using AI. Works on photos, RAW files, and **videos**.
 
 > Type *"girl in red armor"* or *"dog playing in snow"* — or click **Image** to search by visual similarity. Supports text-to-image, image-to-image, **text-to-video**, and **image-to-video** search.
 
-![Makimus-AI Demo](demo.gif)
+![PhotoSearchPro Demo](demo.gif)
 
 <br><br><br>
 
-![Makimus-AI Screenshot](Demo-pic.png)
+![PhotoSearchPro Screenshot](Demo-pic.png)
 
 ---
 
 ## 💛 Support the Developer
 
-Makimus-AI is completely **free and open source**. The source code is available here on GitHub for anyone who wants to set it up manually using Python.
+PhotoSearchPro is completely **free and open source**. The source code is available here on GitHub for anyone who wants to set it up manually using Python.
 
 ### 📦 Want a hassle-free experience?
 
@@ -166,7 +166,7 @@ ROCm requires a separate PyTorch build and is not officially supported. If you w
 
 **Optional (legacy): ONNX acceleration**
 
-Only useful on older NVIDIA GPUs. **Requires code changes inside `Makimus-AI.py` to enable — not plug and play.**
+Only useful on older NVIDIA GPUs. **Requires code changes inside `PhotoSearchPro.py` to enable — not plug and play.**
 ```bash
 pip install onnxruntime-gpu==1.23.2
 ```
@@ -176,7 +176,7 @@ pip install onnxruntime-gpu==1.23.2
 ## ▶️ Run
 ```bash
 # Make sure your venv is active, then:
-python Makimus-AI.py
+python PhotoSearchPro.py
 ```
 
 Windows users can double-click **`Run.bat`**.
@@ -208,14 +208,14 @@ pip install -r requirements.txt
 
 ### First Launch
 1. Launch the app — on **first run it will automatically download the AI model (~1.7 GB)** from HuggingFace. This only happens once and is cached locally.
-2. Click **Folder** and select the folder containing your images and/or videos.
+2. Click **Folders** and select the folder containing your images and/or videos.
 3. If no index exists for that folder, a popup will ask if you want to index it — click **Yes** to start. To index videos separately, use the **Index Videos** button.
 4. Indexing runs in the background with a progress bar. You can start searching before it finishes.
 
 ### Searching
 - **Text search:** Just type what you're looking for and hit Enter or click Search. You don't need exact filenames — describe the content. *"sunset over ocean"*, *"person in blue jacket"*, *"fight scene"* all work.
   - **Negative terms:** Put a minus sign before any word to exclude it — *"cat -dog"* finds cats without dogs in the image. Lower the Similarity Score to 0.10 or below when using negative terms for the best results.
-- **Image search:** Click the **Image** button and pick any image from your computer, or just **drag and drop an image directly onto the results area** — Makimus will find everything in your collection that looks visually similar. Works for both images and video frames. Note: drop the image onto the main results canvas, not the control panel at the top. Drag and drop requires `tkinterdnd2` — install it with `pip install tkinterdnd2==0.4.3` inside your venv if it's not working.
+- **Image search:** Click the **Image** button and pick any image from your computer, or just **drag and drop an image directly onto the results area** — PhotoSearchPro will find everything in your collection that looks visually similar. Works for both images and video frames. Note: drop the image onto the main results canvas, not the control panel at the top. Drag and drop requires `tkinterdnd2` — install it with `pip install tkinterdnd2==0.4.3` inside your venv if it's not working.
 - The **Similarity Score** slider controls how strict the matching is. Lower it to get more results, raise it to get only close matches.
 
 ### Working with Results
@@ -292,9 +292,9 @@ pip install -r requirements.txt
 **Why ViT-L-14 on LAION-2B?**
 
 
-ViT-L-14 is one of the largest and most capable open CLIP models available. It was trained on LAION-2B — a dataset of 2 billion image-text pairs scraped from the real internet, completely uncurated and unfiltered. This matters because most commercial models are trained on carefully filtered datasets that exclude large categories of content.
+ ViT-L-14 is one of the largest and most capable open CLIP models available. It was trained on LAION-2B — a dataset of 2 billion image-text pairs scraped from the real internet, completely uncurated and unfiltered. This matters because most commercial models are trained on carefully filtered datasets that exclude large categories of content.
 Because LAION-2B reflects what actually exists on the internet, the model understands an extremely wide range of visual content: photography, illustrations, anime, art styles, adult content, niche genres, and everything in between. It handles abstract descriptions just as well as specific visual details.
-This makes it significantly more versatile for diverse personal media collections compared to models trained on sanitized or domain-specific datasets — which is exactly what Makimus-AI is designed for.
+This makes it significantly more versatile for diverse personal media collections compared to models trained on sanitized or domain-specific datasets — which is exactly what PhotoSearchPro is designed for.
 
 ---
 
@@ -305,7 +305,7 @@ This makes it significantly more versatile for diverse personal media collection
 - After adding new files, use **Refresh** to update the index
 - Renaming or moving the indexed folder does not break the cache
 - CPU-only mode works but indexing will be significantly slower
-- After indexing, if any files failed to process, Makimus creates `makimus_skipped_images.txt` and/or `makimus_skipped_videos.txt` inside your indexed folder. Each run appends to the file with a timestamp and the list of failed files — useful for identifying corrupt or unreadable files in your collection
+- After indexing, if any files failed to process, PhotoSearchPro creates `photosearchpro_skipped_images.txt` and/or `photosearchpro_skipped_videos.txt` inside your indexed folder. Each run appends to the file with a timestamp and the list of failed files — useful for identifying corrupt or unreadable files in your collection
 - Indexing speed depends on your hardware. SSDs are faster overall, but the real bottleneck is your GPU — a powerful GPU will outpace any drive. HDDs work fine but are slower, especially for large collections
 
 ---

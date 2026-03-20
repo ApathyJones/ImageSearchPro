@@ -18,5 +18,5 @@ if not exist "%~dp0venv" (
 )
 call "%~dp0venv\Scripts\activate.bat"
 pip install -r requirements.txt
-python Makimus-AI.py
+python PhotoSearchPro.py
 pause

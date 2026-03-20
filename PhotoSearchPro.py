@@ -297,7 +297,7 @@ MODEL_REGISTRY = {
 DEFAULT_MODEL_KEY = "clip-vit-l-14-laion"
 
 # Persisted user preferences (model choice, etc.)
-SETTINGS_FILE = Path.home() / ".makimus_config.json"
+SETTINGS_FILE = Path.home() / ".photosearchpro_config.json"
 
 def _load_app_settings():
     try:
@@ -1548,7 +1548,7 @@ class ImageSearchApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self._dispatch_signal.connect(self._dispatch_invoke)
-        self.setWindowTitle("Makimus - AI Media Search")
+        self.setWindowTitle("PhotoSearchPro - AI Media Search")
         self.resize(1400, 900)
 
         if os.name == 'nt':
@@ -2461,8 +2461,8 @@ class ImageSearchApp(QMainWindow):
         layout = QVBoxLayout(dlg)
         lbl = QLabel(
             f"<b>{len(combined)} file(s)</b> could not be indexed in the last run. "
-            "These have also been logged to <i>makimus_skipped_images.txt</i> / "
-            "<i>makimus_skipped_videos.txt</i> in your folder."
+            "These have also been logged to <i>photosearchpro_skipped_images.txt</i> / "
+            "<i>photosearchpro_skipped_videos.txt</i> in your folder."
         )
         lbl.setWordWrap(True)
         layout.addWidget(lbl)
@@ -3746,7 +3746,7 @@ class ImageSearchApp(QMainWindow):
         was_stopped = self.stop_indexing
         count = len(self.image_paths)
 
-        self._write_failed_log(self._failed_images, "makimus_skipped_images.txt")
+        self._write_failed_log(self._failed_images, "photosearchpro_skipped_images.txt")
         self._last_failed_images = list(self._failed_images)
         self._failed_images = []
 
@@ -3828,7 +3828,7 @@ class ImageSearchApp(QMainWindow):
         n_frames = len(self.video_paths)
         n_videos = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
 
-        self._write_failed_log(self._failed_videos, "makimus_skipped_videos.txt")
+        self._write_failed_log(self._failed_videos, "photosearchpro_skipped_videos.txt")
         self._last_failed_videos = list(self._failed_videos)
         self._failed_videos = []
 
@@ -6770,7 +6770,7 @@ class ImageSearchApp(QMainWindow):
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("Makimus - AI Media Search (Cross-Platform GPU Accelerated)")
+    print("PhotoSearchPro - AI Media Search (Cross-Platform GPU Accelerated)")
     print("=" * 60)
 
     # Ensure Qt uses its own platform plugins.
