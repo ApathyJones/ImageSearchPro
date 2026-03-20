@@ -54,6 +54,26 @@ from PyQt6.QtCore import (
 Image.MAX_IMAGE_PIXELS = None
 warnings.filterwarnings("ignore", category=Image.DecompressionBombWarning)
 
+# ---------------------------------------------------------------------------
+# App directory & model cache redirection
+# Models are stored in a "models" sub-folder next to the script/executable
+# instead of the default ~/.cache location on the system drive.
+# ---------------------------------------------------------------------------
+_SCRIPT = Path(sys.executable if getattr(sys, "frozen", False) else __file__)
+APP_DIR   = _SCRIPT.resolve().parent
+MODELS_DIR = APP_DIR / "models"
+MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Redirect HuggingFace hub (open_clip + transformers) before any HF import.
+# HF_HOME sets the root; HUGGINGFACE_HUB_CACHE is the exact hub download dir.
+_HF_CACHE = str(MODELS_DIR / "huggingface" / "hub")
+os.makedirs(_HF_CACHE, exist_ok=True)
+os.environ.setdefault("HF_HOME",                str(MODELS_DIR / "huggingface"))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE",  _HF_CACHE)
+os.environ.setdefault("TRANSFORMERS_CACHE",     _HF_CACHE)
+# Redirect PyTorch hub downloads (e.g. open_clip weights fetched via torch.hub)
+os.environ.setdefault("TORCH_HOME", str(MODELS_DIR / "torch"))
+
 # --- Cross-Platform Configuration & Auto-Tuning ---
 def get_system_vram():
     """
@@ -581,7 +601,7 @@ class HybridCLIPModel:
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
             kw = dict(pretrained=pretrained) if pretrained else {}
             self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                model_name, **kw
+                model_name, cache_dir=_HF_CACHE, **kw
             )
             self.tokenizer = open_clip.get_tokenizer(model_name)
             safe_print(f"[MODEL] Loaded from local cache")
@@ -598,7 +618,7 @@ class HybridCLIPModel:
                 safe_print(f"[MODEL] Downloading {model_name} (this may take a while)...")
                 kw = dict(pretrained=pretrained) if pretrained else {}
                 self.model, _, self.preprocess = open_clip.create_model_and_transforms(
-                    model_name, **kw
+                    model_name, cache_dir=_HF_CACHE, **kw
                 )
                 self.tokenizer = open_clip.get_tokenizer(model_name)
                 safe_print(f"[MODEL] Download complete!")
@@ -650,7 +670,7 @@ class HybridCLIPModel:
             return
         
         # Setup ONNX Visual Encoder
-        cache_dir = Path.home() / ".cache" / "onnx_clip"
+        cache_dir = MODELS_DIR / "onnx_clip"
         cache_dir.mkdir(parents=True, exist_ok=True)
         self.onnx_visual_path = cache_dir / f"{self.model_cfg['cache_key'].replace('-', '_')}_visual.onnx"
         
@@ -945,16 +965,16 @@ class SigLIP2BackendModel:
         try:
             os.environ["HF_HUB_OFFLINE"]     = "1"
             os.environ["TRANSFORMERS_OFFLINE"] = "1"
-            self.processor = AutoProcessor.from_pretrained(hf_id)
-            self.hf_model  = AutoModel.from_pretrained(hf_id)
+            self.processor = AutoProcessor.from_pretrained(hf_id, cache_dir=_HF_CACHE)
+            self.hf_model  = AutoModel.from_pretrained(hf_id, cache_dir=_HF_CACHE)
             safe_print(f"[MODEL] Loaded from local cache")
         except Exception:
             safe_print(f"[MODEL] Not cached — downloading {hf_id} (first run only)...")
             os.environ["HF_HUB_OFFLINE"]     = "0"
             os.environ["TRANSFORMERS_OFFLINE"] = "0"
             try:
-                self.processor = AutoProcessor.from_pretrained(hf_id)
-                self.hf_model  = AutoModel.from_pretrained(hf_id)
+                self.processor = AutoProcessor.from_pretrained(hf_id, cache_dir=_HF_CACHE)
+                self.hf_model  = AutoModel.from_pretrained(hf_id, cache_dir=_HF_CACHE)
                 safe_print(f"[MODEL] Download complete!")
             except Exception as dl_err:
                 raise RuntimeError(
