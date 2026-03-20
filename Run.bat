@@ -5,5 +5,5 @@ if not exist "%~dp0venv" (
     exit
 )
 call "%~dp0venv\Scripts\activate.bat"
-python Makimus-AI.py
+python PhotoSearchPro.py
 pause

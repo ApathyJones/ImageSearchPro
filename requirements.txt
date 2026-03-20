@@ -40,5 +40,5 @@ Send2Trash==2.1.0
 # pip install torch-directml
 
 # ── Optional (legacy): ONNX GPU acceleration ─────────────────────────────────
-# Only useful on older NVIDIA GPUs. Also requires code changes in Makimus-AI.py.
+# Only useful on older NVIDIA GPUs. Also requires code changes in PhotoSearchPro.py.
 # pip install onnxruntime-gpu==1.23.2
