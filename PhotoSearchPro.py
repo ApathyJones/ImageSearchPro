@@ -1542,7 +1542,7 @@ class ResultCard(QFrame):
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setStyleSheet(
-            f"color: {FG_MUTED}; font-size: 8px; border: none; background: transparent;"
+            f"color: {FG_MUTED}; font-size: 11px; border: none; background: transparent;"
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
@@ -4983,10 +4983,10 @@ class ImageSearchApp(QMainWindow):
         if result_type == "video":
             ts = metadata.get("timestamp", 0.0)
             m, s = int(ts)//60, int(ts)%60
-            name = os.path.basename(path)[:25]
+            name = os.path.basename(path)[:40]
             text = f"{score:.3f}\n{name}\nt={m}:{s:02d}"
         else:
-            name = os.path.basename(path)[:25]
+            name = os.path.basename(path)[:40]
             text = f"{score:.3f}\n{name}"
         card.info_label.setText(text)
 
