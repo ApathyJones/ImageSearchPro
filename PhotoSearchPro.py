@@ -3197,12 +3197,6 @@ class ImageSearchApp(QMainWindow):
         del_btn.clicked.connect(delete_saved)
         saved_list.itemDoubleClicked.connect(lambda _: load_saved())
 
-        # ── If no folders yet, open native picker immediately ──────────────
-        if list_widget.count() == 0:
-            folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
-            if folder:
-                list_widget.addItem(folder)
-
         # ── Bottom OK / Cancel ─────────────────────────────────────────────
         ok_btn     = QPushButton("OK")
         ok_btn.setProperty("class", "accent")
