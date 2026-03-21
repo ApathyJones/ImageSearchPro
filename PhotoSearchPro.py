@@ -1519,16 +1519,17 @@ class ResultCard(QFrame):
         
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.img_label.setStyleSheet("background: transparent;")
         layout.addWidget(self.img_label)
         
         self.select_cb = QCheckBox("Select")
-        self.select_cb.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        self.select_cb.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt; background: transparent;")
         layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setStyleSheet(
-            f"color: {FG_MUTED}; font-size: 8px; border: none;"
+            f"color: {FG_MUTED}; font-size: 8px; border: none; background: transparent;"
         )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
