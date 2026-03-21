@@ -44,7 +44,8 @@ from PyQt6.QtWidgets import (
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
     QInputDialog, QComboBox)
 from PyQt6.QtGui import (
-    QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon)
+    QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon,
+    QPalette, QColor)
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal,
     QFileSystemWatcher)
@@ -7228,6 +7229,22 @@ if __name__ == "__main__":
 
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # consistent cross-platform look
+
+    # Force dark palette so Fusion-style popup windows (e.g. combobox
+    # dropdowns) use dark colors instead of the system default white.
+    _pal = QPalette()
+    _pal.setColor(QPalette.ColorRole.Window,          QColor(BG))
+    _pal.setColor(QPalette.ColorRole.WindowText,      QColor(FG))
+    _pal.setColor(QPalette.ColorRole.Base,            QColor(PANEL_BG))
+    _pal.setColor(QPalette.ColorRole.AlternateBase,   QColor(CARD_BG))
+    _pal.setColor(QPalette.ColorRole.Text,            QColor(FG))
+    _pal.setColor(QPalette.ColorRole.Button,          QColor(CARD_BG))
+    _pal.setColor(QPalette.ColorRole.ButtonText,      QColor(FG))
+    _pal.setColor(QPalette.ColorRole.Highlight,       QColor(ACCENT_SECONDARY))
+    _pal.setColor(QPalette.ColorRole.HighlightedText, QColor(FG))
+    _pal.setColor(QPalette.ColorRole.ToolTipBase,     QColor(PANEL_BG))
+    _pal.setColor(QPalette.ColorRole.ToolTipText,     QColor(FG))
+    app.setPalette(_pal)
 
     # Apply dark QSS theme
     app.setStyleSheet(DARK_QSS)
