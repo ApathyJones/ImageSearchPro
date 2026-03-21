@@ -1780,7 +1780,7 @@ class FolderDropListWidget(QListWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QListWidget.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.CopyAction)
-        self.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+        self.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.setToolTip("Drag folders here to add them")
 
     def dragEnterEvent(self, event):
@@ -2180,6 +2180,7 @@ class ImageSearchApp(QMainWindow):
 
         self.btn_clear_image_search = QPushButton("X")
         self.btn_clear_image_search.setFixedWidth(26)
+        self.btn_clear_image_search.setStyleSheet("QPushButton { padding: 0px; }")
         self.btn_clear_image_search.setToolTip("Clear loaded image")
         self.btn_clear_image_search.clicked.connect(self._clear_image_search)
         self.btn_clear_image_search.setVisible(False)
@@ -3213,10 +3214,14 @@ class ImageSearchApp(QMainWindow):
         right_layout.addWidget(list_widget, stretch=1)
 
         edit_btn_row = QHBoxLayout()
-        add_btn    = QPushButton("Add Folder…")
-        remove_btn = QPushButton("Remove Selected")
+        add_btn       = QPushButton("Add Folder…")
+        remove_btn    = QPushButton("Remove Selected")
+        select_all_btn = QPushButton("Select All")
+        select_all_btn.setToolTip("Select all folders in the list")
+        select_all_btn.clicked.connect(list_widget.selectAll)
         edit_btn_row.addWidget(add_btn)
         edit_btn_row.addWidget(remove_btn)
+        edit_btn_row.addWidget(select_all_btn)
         edit_btn_row.addStretch()
         right_layout.addLayout(edit_btn_row)
 
@@ -3258,9 +3263,8 @@ class ImageSearchApp(QMainWindow):
                 list_widget.addItem(folder)
 
         def remove_folder():
-            row = list_widget.currentRow()
-            if row >= 0:
-                list_widget.takeItem(row)
+            for item in list_widget.selectedItems():
+                list_widget.takeItem(list_widget.row(item))
 
         def load_saved():
             row = saved_list.currentRow()
