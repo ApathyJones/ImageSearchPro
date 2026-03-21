@@ -20,7 +20,7 @@ AI-powered desktop app to search your image and video library using text descrip
 
 ### Windows (Easy)
 
-1. Clone the repo: `git clone https://github.com/Ubaida-M-Yusuf/Makimus-AI.git`
+1. Clone the repo: `git clone https://github.com/ApathyJones/ImageSearchPro.git`
 2. Double-click `Install.bat` — sets up everything and launches the app
 3. Use `Run.bat` to launch in the future
 
@@ -32,8 +32,8 @@ AI-powered desktop app to search your image and video library using text descrip
 
 **1. Clone the repo:**
 ```bash
-git clone https://github.com/Ubaida-M-Yusuf/Makimus-AI.git
-cd Makimus-AI
+git clone https://github.com/ApathyJones/ImageSearchPro.git
+cd ImageSearchPro
 ```
 
 **2. Linux only — install system dependencies:**
@@ -281,6 +281,4 @@ Some models require a HuggingFace account token. Enter it via the settings in th
 
 ## Support
 
-A pre-packaged Windows installer (no Python required) is available on [Payhip](https://payhip.com/b/ZUEPu).
-
-Donations: [PayPal](https://www.paypal.me/UbaidahYusuf) | BTC: `32Ztk8P3zMavx51usno2adnDiZzLmZL42y` | USDT TRC-20: `TYwaZ2xNqHUYDXH83teMSNtWfYETiBAEDk`
+If you run into issues or have questions, open an issue on [GitHub](https://github.com/ApathyJones/ImageSearchPro/issues).
