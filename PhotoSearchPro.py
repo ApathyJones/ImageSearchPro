@@ -1888,6 +1888,7 @@ class ImageSearchApp(QMainWindow):
 
         # Last image used for image search (enables Re-run)
         self._last_image_search_path = None
+        self._last_search_type = None   # 'text' or 'image'
 
         # File-system watcher for auto-incremental index
         self._fs_watcher = QFileSystemWatcher()
@@ -2162,11 +2163,14 @@ class ImageSearchApp(QMainWindow):
         btn_image.clicked.connect(self.on_image_click)
         search_layout.addWidget(btn_image)
 
-        self.last_image_label = QLabel("")
-        self.last_image_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
-        self.last_image_label.setToolTip("Last image used for search")
-        self.last_image_label.setVisible(False)
-        search_layout.addWidget(self.last_image_label)
+        self.last_image_thumb = QLabel()
+        self.last_image_thumb.setFixedSize(32, 32)
+        self.last_image_thumb.setScaledContents(True)
+        self.last_image_thumb.setStyleSheet(
+            f"border: 1px solid {BORDER}; border-radius: 3px;"
+        )
+        self.last_image_thumb.setVisible(False)
+        search_layout.addWidget(self.last_image_thumb)
 
         self.btn_rerun_image = QPushButton("Re-run")
         self.btn_rerun_image.setToolTip("Re-run image search with the same image")
@@ -2174,7 +2178,7 @@ class ImageSearchApp(QMainWindow):
         self.btn_rerun_image.setVisible(False)
         search_layout.addWidget(self.btn_rerun_image)
 
-        self.btn_clear_image_search = QPushButton("✕")
+        self.btn_clear_image_search = QPushButton("X")
         self.btn_clear_image_search.setFixedWidth(26)
         self.btn_clear_image_search.setToolTip("Clear loaded image")
         self.btn_clear_image_search.clicked.connect(self._clear_image_search)
@@ -2334,6 +2338,21 @@ class ImageSearchApp(QMainWindow):
         self.sort_combo.setToolTip("Re-sort the current search results")
         self.sort_combo.currentIndexChanged.connect(self._resort_and_redisplay)
         controls_layout.addWidget(self.sort_combo)
+
+        sep4 = QFrame()
+        sep4.setFrameShape(QFrame.Shape.VLine)
+        sep4.setFixedWidth(1)
+        sep4.setFixedHeight(20)
+        sep4.setStyleSheet(f"background-color: {BORDER}; border: none;")
+        controls_layout.addWidget(sep4)
+
+        self.auto_find_cb = QCheckBox("Auto-find")
+        self.auto_find_cb.setChecked(False)
+        self.auto_find_cb.setToolTip(
+            "When enabled, automatically lowers the similarity score\n"
+            "and retries the search until at least one result is found."
+        )
+        controls_layout.addWidget(self.auto_find_cb)
 
         main_layout.addWidget(controls_widget)
 
@@ -2716,11 +2735,18 @@ class ImageSearchApp(QMainWindow):
     def _set_last_image_search(self, path):
         """Store the last image search path and reveal the Re-run controls."""
         self._last_image_search_path = path
-        name = os.path.basename(path)
-        if len(name) > 22:
-            name = name[:20] + "…"
-        self.last_image_label.setText(name)
-        self.last_image_label.setVisible(True)
+        self._last_search_type = 'image'
+        # Build and display a small thumbnail
+        try:
+            pil_img = open_image(path)
+            if pil_img is not None:
+                pil_img.thumbnail((64, 64))
+                pixmap = pil_to_pixmap(pil_img)
+                self.last_image_thumb.setPixmap(pixmap)
+        except Exception:
+            self.last_image_thumb.clear()
+        self.last_image_thumb.setToolTip(os.path.basename(path))
+        self.last_image_thumb.setVisible(True)
         self.btn_rerun_image.setVisible(True)
         self.btn_clear_image_search.setVisible(True)
 
@@ -2739,8 +2765,8 @@ class ImageSearchApp(QMainWindow):
     def _clear_image_search(self):
         """Clear the loaded image and hide Re-run controls."""
         self._last_image_search_path = None
-        self.last_image_label.setText("")
-        self.last_image_label.setVisible(False)
+        self.last_image_thumb.clear()
+        self.last_image_thumb.setVisible(False)
         self.btn_rerun_image.setVisible(False)
         self.btn_clear_image_search.setVisible(False)
 
@@ -3007,6 +3033,7 @@ class ImageSearchApp(QMainWindow):
         self.delete_selected()
 
     def on_search_click(self):
+        self._last_search_type = 'text'
         self.hide_info_bar()
         self.cancel_search(clear_ui=True)
         self.do_search()
@@ -4681,6 +4708,7 @@ class ImageSearchApp(QMainWindow):
                 safe_print("[SEARCH] No results found")
                 self._safe_after(0, lambda: self.update_status("No results found", "green"))
                 self._safe_after(100, self._maybe_suggest_lower_score)
+                self._safe_after(150, self._auto_find_retry)
                 self.is_searching = False
 
         except Exception as e:
@@ -4750,6 +4778,7 @@ class ImageSearchApp(QMainWindow):
                 self.start_thumbnail_loader(first_batch, generation)
             else:
                 self._safe_after(0, lambda: self.update_status("No matches", "green"))
+                self._safe_after(150, self._auto_find_retry)
                 self.is_searching = False
         except Exception as e:
             safe_print(f"[IMAGE SEARCH PIL ERROR] {e}")
@@ -4824,6 +4853,7 @@ class ImageSearchApp(QMainWindow):
             else:
                 self._safe_after(0, lambda: self.update_status("No matches", "green"))
                 self._safe_after(100, self._maybe_suggest_lower_score)
+                self._safe_after(150, self._auto_find_retry)
                 self.is_searching = False
         except Exception as e:
             safe_print(f"[IMAGE SEARCH ERROR] {e}")
@@ -5078,6 +5108,32 @@ class ImageSearchApp(QMainWindow):
                 "(text: 0.15–0.30 | image: 0.60–0.85) "
                 "or check that the Image/Video filter buttons are enabled."
             )
+
+    def _auto_find_retry(self):
+        """If Auto-find is enabled and last search had no results, lower score and retry."""
+        if not getattr(self, 'auto_find_cb', None) or not self.auto_find_cb.isChecked():
+            return
+        if self.total_found > 0:
+            return
+        current = self.score_slider.value()
+        if current <= 0:
+            self.update_status("Auto-find: no matches found at any score", "orange")
+            return
+        step = 5
+        new_val = max(0, current - step)
+        self.score_slider.setValue(new_val)
+        safe_print(f"[AUTO-FIND] No results at {current/100:.2f}, retrying at {new_val/100:.2f}")
+        if self._last_search_type == 'image' and self._last_image_search_path:
+            path = self._last_image_search_path
+            gen = self.search_generation + 1
+            self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
+            self.search_thread.start()
+        elif self._last_search_type == 'text':
+            query = self.query_entry.text().strip()
+            if query:
+                gen = self.search_generation + 1
+                self.search_thread = Thread(target=lambda: self.search(query, gen), daemon=True)
+                self.search_thread.start()
 
     def prev_page_results(self):
         """Go back one page"""
