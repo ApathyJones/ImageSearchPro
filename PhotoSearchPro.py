@@ -490,9 +490,22 @@ DARK_QSS = f"""
         selection-background-color: {ACCENT_SECONDARY};
         outline: none;
     }}
+    QComboBox QAbstractItemView::item {{
+        background-color: {PANEL_BG};
+        color: {FG};
+        padding: 4px 8px;
+    }}
+    QComboBox QAbstractItemView::item:selected,
+    QComboBox QAbstractItemView::item:hover {{
+        background-color: {ACCENT_SECONDARY};
+        color: {FG};
+    }}
     QComboBox QAbstractScrollArea {{
         background-color: {PANEL_BG};
         border: none;
+    }}
+    QComboBox QAbstractScrollArea > QWidget {{
+        background-color: {PANEL_BG};
     }}
 
     /* ── Lists ─────────────────────────────────────────────────────────── */
