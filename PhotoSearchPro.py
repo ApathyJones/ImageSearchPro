@@ -403,11 +403,12 @@ DARK_QSS = f"""
     /* ── Base ─────────────────────────────────────────────────────────── */
     QMainWindow, QWidget {{ background-color: {BG}; color: {FG}; }}
 
-    /* ── Buttons — default: muted dark with border ───────────────────── */
+    /* ── Buttons — default: subtle gradient with visible border ─────────── */
     QPushButton {{
-        background-color: {CARD_BG};
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #2d333b, stop:1 {CARD_BG});
         color: {FG};
-        border: 1px solid {BORDER};
+        border: 1px solid #3a4050;
         padding: 5px 14px;
         border-radius: 6px;
         font-weight: 600;
@@ -415,10 +416,11 @@ DARK_QSS = f"""
         min-height: 22px;
     }}
     QPushButton:hover {{
-        background-color: {CARD_HOVER};
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #373e47, stop:1 #2d333b);
         border-color: {FG_MUTED};
     }}
-    QPushButton:pressed {{ background-color: {PANEL_BG}; border-color: {BORDER_ACTIVE}; }}
+    QPushButton:pressed {{ background: {PANEL_BG}; border-color: {BORDER_ACTIVE}; }}
 
     /* accent — vivid blue (Search, Move, pagination …) */
     QPushButton[class="accent"] {{
@@ -453,8 +455,9 @@ DARK_QSS = f"""
         background-color: {BG};
         color: {FG};
         border: 1px solid {BORDER};
-        padding: 6px 10px;
+        padding: 5px 10px 7px 10px;
         border-radius: 6px;
+        min-height: 26px;
         selection-background-color: {ACCENT_SECONDARY};
     }}
     QLineEdit:focus {{ border: 1px solid {BORDER_ACTIVE}; }}
@@ -480,13 +483,16 @@ DARK_QSS = f"""
     QComboBox:focus {{ border-color: {BORDER_ACTIVE}; }}
     QComboBox::drop-down {{ border: none; width: 18px; }}
     QComboBox QAbstractItemView {{
-        background: {PANEL_BG};
+        background-color: {PANEL_BG};
         color: {FG};
         border: 1px solid {BORDER};
-        border-radius: 6px;
+        border-radius: 0px;
         selection-background-color: {ACCENT_SECONDARY};
         outline: none;
-        padding: 2px;
+    }}
+    QComboBox QAbstractScrollArea {{
+        background-color: {PANEL_BG};
+        border: none;
     }}
 
     /* ── Lists ─────────────────────────────────────────────────────────── */
@@ -534,7 +540,7 @@ DARK_QSS = f"""
     QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 
     /* ── Checkboxes ─────────────────────────────────────────────────────── */
-    QCheckBox {{ color: {FG}; spacing: 6px; }}
+    QCheckBox {{ color: {FG}; spacing: 6px; background: transparent; }}
     QCheckBox::indicator {{
         width: 14px;
         height: 14px;
@@ -2092,7 +2098,14 @@ class ImageSearchApp(QMainWindow):
         toolbar_layout.addWidget(self.auto_update_cb)
 
         btn_info = QPushButton("?")
-        btn_info.setFixedWidth(30)
+        btn_info.setFixedSize(28, 28)
+        btn_info.setStyleSheet(
+            "QPushButton { padding: 0px; font-weight: 700; font-size: 13pt;"
+            f"  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,"
+            f"    stop:0 #2d333b, stop:1 {CARD_BG});"
+            f"  border: 1px solid #3a4050; border-radius: 6px; color: {FG_MUTED}; }}"
+            f"QPushButton:hover {{ border-color: {FG_MUTED}; color: {FG}; }}"
+        )
         btn_info.clicked.connect(self.show_index_info)
         toolbar_layout.addWidget(btn_info)
 
