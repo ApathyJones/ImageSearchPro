@@ -1575,7 +1575,7 @@ class ResultsScrollArea(QScrollArea):
         self._container.setStyleSheet(f"background-color: {BG};")
         self._grid = QGridLayout(self._container)
         self._grid.setSpacing(10)
-        self._grid.setContentsMargins(10, 10, 10, 10)
+        self._grid.setContentsMargins(10, 10, 22, 10)
         self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setWidget(self._container)
         
@@ -2032,12 +2032,12 @@ class ImageSearchApp(QMainWindow):
         toolbar_layout.addWidget(btn_unload)
         toolbar_layout.addSpacing(8)
 
-        self.btn_stop = QPushButton("STOP INDEX")
+        self.btn_stop = QPushButton("Stop Index")
         self.btn_stop.setProperty("class", "danger")
         self.btn_stop.clicked.connect(self.stop_indexing_process)
         toolbar_layout.addWidget(self.btn_stop)
 
-        btn_exit = QPushButton("EXIT")
+        btn_exit = QPushButton("Exit")
         btn_exit.setProperty("class", "danger")
         btn_exit.clicked.connect(self.force_quit)
         toolbar_layout.addWidget(btn_exit)
@@ -2089,7 +2089,7 @@ class ImageSearchApp(QMainWindow):
         btn_hf_token.clicked.connect(self.set_hf_token)
         toolbar_layout.addWidget(btn_hf_token)
 
-        self.auto_update_cb = QCheckBox("Auto-update")
+        self.auto_update_cb = QCheckBox("Auto-Update")
         self.auto_update_cb.setToolTip(
             "Watch the indexed folder for new files and automatically refresh the index when changes are detected."
         )
@@ -2277,7 +2277,7 @@ class ImageSearchApp(QMainWindow):
         sep2.setStyleSheet(f"background-color: {BORDER}; border: none;")
         controls_layout.addWidget(sep2)
 
-        self.dedup_video_cb = QCheckBox("Best frame/video")
+        self.dedup_video_cb = QCheckBox("Best Frame/Video")
         self.dedup_video_cb.setChecked(False)
         controls_layout.addWidget(self.dedup_video_cb)
 
@@ -2292,7 +2292,7 @@ class ImageSearchApp(QMainWindow):
         lbl_sort.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
         controls_layout.addWidget(lbl_sort)
         self.sort_combo = QComboBox()
-        self.sort_combo.addItems(["Score ↓", "Date (newest)", "Date (oldest)", "Name A→Z", "Name Z→A", "Size ↓"])
+        self.sort_combo.addItems(["Score ↓", "Date (Newest)", "Date (Oldest)", "Name A→Z", "Name Z→A", "Size ↓"])
         self.sort_combo.setFixedWidth(130)
         self.sort_combo.setToolTip("Re-sort the current search results")
         self.sort_combo.currentIndexChanged.connect(self._resort_and_redisplay)
