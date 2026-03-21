@@ -349,15 +349,18 @@ def _save_indexes_list(entries):
 # For most users PyTorch native CUDA is faster and uses less VRAM.
 USE_ONNX = False
 
-BG = "#1e1e1e"
-PANEL_BG = "#252526"
-CARD_BG = "#2d2d30"
-FG = "#e0e0e0"
-ACCENT = "#4CAF50"
-ACCENT_SECONDARY = "#3fa9f5"
-DANGER = "#f44336"
-ORANGE = "#ff9800"
-BORDER = "#3c3c3c"
+BG               = "#0d1117"   # Deep background
+PANEL_BG         = "#161b22"   # Toolbar / panel areas
+CARD_BG          = "#21262d"   # Cards, inputs
+CARD_HOVER       = "#2d333b"   # Card hover state
+FG               = "#e6edf3"   # Primary text
+FG_MUTED         = "#8b949e"   # Secondary / hint text
+ACCENT           = "#3fb950"   # Green — success, status
+ACCENT_SECONDARY = "#388bfd"   # Blue — primary interactive (Search, Move …)
+DANGER           = "#f85149"   # Red — destructive actions
+ORANGE           = "#e3b341"   # Amber — warnings
+BORDER           = "#30363d"   # Subtle border
+BORDER_ACTIVE    = "#58a6ff"   # Focus / hover border highlight
 
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
@@ -397,34 +400,237 @@ NUDENET_LABEL_GROUPS = {
 _DISK_LOCK = threading.Lock()
 
 DARK_QSS = f"""
+    /* ── Base ─────────────────────────────────────────────────────────── */
     QMainWindow, QWidget {{ background-color: {BG}; color: {FG}; }}
-    QFrame {{ background-color: {BG}; }}
-    QPushButton {{ background-color: {ACCENT}; color: {FG}; border: none; padding: 6px 12px; border-radius: 3px; }}
-    QPushButton:hover {{ background-color: #5ecf60; }}
-    QPushButton[class="accent"] {{ background-color: {ACCENT_SECONDARY}; }}
-    QPushButton[class="accent"]:hover {{ background-color: #67c6ff; }}
-    QPushButton[class="danger"] {{ background-color: {DANGER}; }}
-    QPushButton[class="danger"]:hover {{ background-color: #ff6a6a; }}
-    QLineEdit {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; padding: 4px; border-radius: 2px; }}
-    QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
-    QListWidget {{ background-color: {CARD_BG}; color: {FG}; border: none; }}
-    QListWidget::item:selected {{ background-color: {ACCENT}; }}
+
+    /* ── Buttons — default: muted dark with border ───────────────────── */
+    QPushButton {{
+        background-color: {CARD_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        padding: 5px 14px;
+        border-radius: 6px;
+        font-weight: 600;
+        font-size: 9pt;
+        min-height: 22px;
+    }}
+    QPushButton:hover {{
+        background-color: {CARD_HOVER};
+        border-color: {FG_MUTED};
+    }}
+    QPushButton:pressed {{ background-color: {PANEL_BG}; border-color: {BORDER_ACTIVE}; }}
+
+    /* accent — vivid blue (Search, Move, pagination …) */
+    QPushButton[class="accent"] {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #4fa3ff, stop:1 {ACCENT_SECONDARY});
+        color: white;
+        border: 1px solid {ACCENT_SECONDARY};
+    }}
+    QPushButton[class="accent"]:hover {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #70b8ff, stop:1 #4fa3ff);
+        border-color: {BORDER_ACTIVE};
+    }}
+    QPushButton[class="accent"]:pressed {{ background: {ACCENT_SECONDARY}; }}
+
+    /* danger — vivid red (Delete, STOP, EXIT) */
+    QPushButton[class="danger"] {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 {DANGER}, stop:1 #bf3a38);
+        color: white;
+        border: 1px solid #bf3a38;
+    }}
+    QPushButton[class="danger"]:hover {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 #ff7b78, stop:1 {DANGER});
+        border-color: #ff7b78;
+    }}
+    QPushButton[class="danger"]:pressed {{ background: #bf3a38; }}
+
+    /* ── Inputs ────────────────────────────────────────────────────────── */
+    QLineEdit {{
+        background-color: {BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        padding: 6px 10px;
+        border-radius: 6px;
+        selection-background-color: {ACCENT_SECONDARY};
+    }}
+    QLineEdit:focus {{ border: 1px solid {BORDER_ACTIVE}; }}
+
+    QSpinBox {{
+        background-color: {CARD_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 4px 8px;
+    }}
+    QSpinBox:focus {{ border-color: {BORDER_ACTIVE}; }}
+
+    QComboBox {{
+        background-color: {CARD_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 4px 10px;
+        min-height: 22px;
+    }}
+    QComboBox:hover {{ border-color: {FG_MUTED}; }}
+    QComboBox:focus {{ border-color: {BORDER_ACTIVE}; }}
+    QComboBox::drop-down {{ border: none; width: 18px; }}
+    QComboBox QAbstractItemView {{
+        background: {PANEL_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        selection-background-color: {ACCENT_SECONDARY};
+        outline: none;
+        padding: 2px;
+    }}
+
+    /* ── Lists ─────────────────────────────────────────────────────────── */
+    QListWidget {{
+        background-color: {PANEL_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        outline: none;
+        padding: 2px;
+    }}
+    QListWidget::item {{ padding: 4px 8px; border-radius: 4px; }}
+    QListWidget::item:selected {{ background-color: {ACCENT_SECONDARY}; color: white; }}
+    QListWidget::item:hover:!selected {{ background-color: {CARD_BG}; }}
+
+    /* ── Scrollbars ─────────────────────────────────────────────────────── */
     QScrollArea {{ background-color: {BG}; border: none; }}
-    QScrollBar:vertical {{ background: {PANEL_BG}; width: 12px; }}
-    QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 4px; min-height: 20px; }}
-    QCheckBox {{ color: {FG}; }}
-    QProgressBar {{ background-color: {PANEL_BG}; border: none; }}
-    QProgressBar::chunk {{ background-color: {ACCENT}; }}
-    QTabWidget::pane {{ border: 1px solid {BORDER}; }}
-    QTabBar::tab {{ background: {PANEL_BG}; color: {FG}; padding: 6px 12px; }}
-    QTabBar::tab:selected {{ background: {CARD_BG}; }}
-    QSpinBox {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; }}
-    QSlider::groove:horizontal {{ background: {BORDER}; height: 4px; border-radius: 2px; }}
-    QSlider::handle:horizontal {{ background: {ACCENT}; width: 14px; height: 14px; border-radius: 7px; margin: -5px 0; }}
-    QMenu {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; }}
-    QMenu::item:selected {{ background-color: {ACCENT}; }}
-    QDialog {{ background-color: {BG}; }}
-    QToolTip {{ background-color: {CARD_BG}; color: {FG}; border: 1px solid {BORDER}; padding: 4px; }}
+    QScrollBar:vertical {{
+        background: {BG};
+        width: 8px;
+        margin: 0;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: {BORDER};
+        border-radius: 4px;
+        min-height: 24px;
+    }}
+    QScrollBar::handle:vertical:hover {{ background: {FG_MUTED}; }}
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: none; }}
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+    QScrollBar:horizontal {{
+        background: {BG};
+        height: 8px;
+        margin: 0;
+        border-radius: 4px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: {BORDER};
+        border-radius: 4px;
+        min-width: 24px;
+    }}
+    QScrollBar::handle:horizontal:hover {{ background: {FG_MUTED}; }}
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; border: none; }}
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
+
+    /* ── Checkboxes ─────────────────────────────────────────────────────── */
+    QCheckBox {{ color: {FG}; spacing: 6px; }}
+    QCheckBox::indicator {{
+        width: 14px;
+        height: 14px;
+        border: 1px solid {BORDER};
+        border-radius: 3px;
+        background: {CARD_BG};
+    }}
+    QCheckBox::indicator:hover {{ border-color: {BORDER_ACTIVE}; }}
+    QCheckBox::indicator:checked {{
+        background: {ACCENT_SECONDARY};
+        border-color: {ACCENT_SECONDARY};
+    }}
+
+    /* ── Sliders ────────────────────────────────────────────────────────── */
+    QSlider::groove:horizontal {{
+        background: {CARD_BG};
+        height: 6px;
+        border-radius: 3px;
+        border: 1px solid {BORDER};
+    }}
+    QSlider::sub-page:horizontal {{
+        background: {ACCENT_SECONDARY};
+        height: 6px;
+        border-radius: 3px;
+    }}
+    QSlider::handle:horizontal {{
+        background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+            stop:0 {BORDER_ACTIVE}, stop:1 {ACCENT_SECONDARY});
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        margin: -6px 0;
+        border: 2px solid {BG};
+    }}
+    QSlider::handle:horizontal:hover {{ background: {BORDER_ACTIVE}; }}
+
+    /* ── Progress bar ───────────────────────────────────────────────────── */
+    QProgressBar {{
+        background-color: {CARD_BG};
+        border: none;
+        border-radius: 4px;
+    }}
+    QProgressBar::chunk {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+            stop:0 {ACCENT_SECONDARY}, stop:1 {ACCENT});
+        border-radius: 4px;
+    }}
+
+    /* ── Tabs ───────────────────────────────────────────────────────────── */
+    QTabWidget::pane {{
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        background: {PANEL_BG};
+        top: -1px;
+    }}
+    QTabBar::tab {{
+        background: {CARD_BG};
+        color: {FG_MUTED};
+        padding: 6px 18px;
+        border: 1px solid {BORDER};
+        border-bottom: none;
+        border-top-left-radius: 6px;
+        border-top-right-radius: 6px;
+        margin-right: 2px;
+        font-weight: 600;
+    }}
+    QTabBar::tab:selected {{
+        background: {PANEL_BG};
+        color: {FG};
+        border-bottom: 2px solid {ACCENT_SECONDARY};
+    }}
+    QTabBar::tab:hover:!selected {{ color: {FG}; background: {CARD_HOVER}; }}
+
+    /* ── Menus ──────────────────────────────────────────────────────────── */
+    QMenu {{
+        background-color: {PANEL_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 8px;
+        padding: 4px 0;
+    }}
+    QMenu::item {{ padding: 7px 24px; border-radius: 4px; }}
+    QMenu::item:selected {{ background-color: {ACCENT_SECONDARY}; color: white; }}
+    QMenu::separator {{ background: {BORDER}; height: 1px; margin: 4px 8px; }}
+
+    /* ── Dialogs & tips ─────────────────────────────────────────────────── */
+    QDialog {{ background-color: {BG}; color: {FG}; }}
+    QToolTip {{
+        background-color: {PANEL_BG};
+        color: {FG};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 6px 10px;
+        font-size: 9pt;
+    }}
+    QLabel {{ background: transparent; color: {FG}; }}
 """
 
 def get_safe_path(path):
@@ -1295,22 +1501,29 @@ class ResultCard(QFrame):
         self._on_double_click = None
         self._on_context_menu = None
         self.setFixedSize(CELL_WIDTH, CELL_HEIGHT)
-        self.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+        self.setStyleSheet(
+            f"ResultCard {{ background-color: {CARD_BG}; border: 1px solid {BORDER};"
+            f"              border-radius: 8px; }}"
+            f"ResultCard:hover {{ border-color: {ACCENT_SECONDARY};"
+            f"                   background-color: {CARD_HOVER}; }}"
+        )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(2)
+        layout.setContentsMargins(6, 6, 6, 4)
+        layout.setSpacing(3)
         
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.img_label)
         
         self.select_cb = QCheckBox("Select")
-        self.select_cb.setStyleSheet(f"color: {FG};")
+        self.select_cb.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
         layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
-        
+
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.info_label.setStyleSheet(f"color: {FG}; font-size: 9px; border: none;")
+        self.info_label.setStyleSheet(
+            f"color: {FG_MUTED}; font-size: 8px; border: none;"
+        )
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
     
@@ -1351,11 +1564,12 @@ class ResultsScrollArea(QScrollArea):
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet(f"background-color: {BG}; border: none;")
-        
+
         self._container = QWidget()
         self._container.setStyleSheet(f"background-color: {BG};")
         self._grid = QGridLayout(self._container)
-        self._grid.setSpacing(6)
+        self._grid.setSpacing(10)
+        self._grid.setContentsMargins(10, 10, 10, 10)
         self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setWidget(self._container)
         
@@ -1461,13 +1675,14 @@ class ModelSelectorDialog(QDialog):
             "Note: switching models requires re-indexing your folder."
         )
         hdr.setWordWrap(True)
-        hdr.setStyleSheet("color: #aaaaaa; font-size: 9pt;")
+        hdr.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
         layout.addWidget(hdr)
 
         self.list_widget = QListWidget()
         self.list_widget.setStyleSheet(
-            f"QListWidget::item {{ padding: 8px; border-bottom: 1px solid {BORDER}; }}"
-            f"QListWidget::item:selected {{ background: {ACCENT}; color: white; }}"
+            f"QListWidget::item {{ padding: 8px 10px; border-bottom: 1px solid {BORDER}; border-radius: 0; }}"
+            f"QListWidget::item:selected {{ background: {ACCENT_SECONDARY}; color: white; }}"
+            f"QListWidget::item:hover:!selected {{ background: {CARD_BG}; }}"
         )
         self.list_widget.setFont(QFont("Segoe UI", 10))
 
@@ -1497,7 +1712,7 @@ class ModelSelectorDialog(QDialog):
         # Install-hint label
         self.hint_label = QLabel("")
         self.hint_label.setWordWrap(True)
-        self.hint_label.setStyleSheet("color: #ffaa00; font-size: 9pt;")
+        self.hint_label.setStyleSheet(f"color: {ORANGE}; font-size: 9pt;")
         layout.addWidget(self.hint_label)
         self.list_widget.currentRowChanged.connect(self._on_row_changed)
         self._on_row_changed(self.list_widget.currentRow())
@@ -1778,10 +1993,14 @@ class ImageSearchApp(QMainWindow):
 
         # --- Toolbar ---
         toolbar_widget = QWidget()
-        toolbar_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        toolbar_widget.setObjectName("toolbarPanel")
+        toolbar_widget.setStyleSheet(
+            f"QWidget#toolbarPanel {{ background-color: {PANEL_BG};"
+            f"  border-bottom: 1px solid {BORDER}; }}"
+        )
         toolbar_layout = QHBoxLayout(toolbar_widget)
-        toolbar_layout.setContentsMargins(4, 4, 4, 4)
-        toolbar_layout.setSpacing(4)
+        toolbar_layout.setContentsMargins(8, 6, 8, 6)
+        toolbar_layout.setSpacing(5)
 
         self.btn_folder = QPushButton("Folders")
         self.btn_folder.clicked.connect(self.on_select_folder)
@@ -1843,16 +2062,20 @@ class ImageSearchApp(QMainWindow):
         toolbar_layout.addWidget(btn_faces)
 
         self.status_label = QLabel("Starting...")
-        self.status_label.setMinimumWidth(250)
+        self.status_label.setMinimumWidth(240)
+        self.status_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
         toolbar_layout.addWidget(self.status_label)
 
         self.stats_label = QLabel("")
+        self.stats_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
         toolbar_layout.addWidget(self.stats_label)
 
         toolbar_layout.addStretch()
 
         self.device_label = QLabel("...")
-        self.device_label.setStyleSheet(f"color: {ACCENT_SECONDARY};")
+        self.device_label.setStyleSheet(
+            f"color: {ACCENT_SECONDARY}; font-size: 8pt; font-weight: 600;"
+        )
         toolbar_layout.addWidget(self.device_label)
 
         btn_hf_token = QPushButton("HF Token")
@@ -1877,15 +2100,22 @@ class ImageSearchApp(QMainWindow):
 
         # --- Search bar ---
         search_widget = QWidget()
-        search_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        search_widget.setObjectName("searchPanel")
+        search_widget.setStyleSheet(
+            f"QWidget#searchPanel {{ background-color: {PANEL_BG};"
+            f"  border-bottom: 1px solid {BORDER}; }}"
+        )
         search_layout = QHBoxLayout(search_widget)
-        search_layout.setContentsMargins(8, 4, 8, 4)
-        search_layout.setSpacing(6)
+        search_layout.setContentsMargins(10, 7, 10, 7)
+        search_layout.setSpacing(7)
 
-        search_layout.addWidget(QLabel("Search:"))
+        lbl_search = QLabel("Search:")
+        lbl_search.setStyleSheet(f"color: {FG_MUTED}; font-weight: 600; font-size: 9pt;")
+        search_layout.addWidget(lbl_search)
 
         self.query_entry = QLineEdit()
         self.query_entry.setFont(QFont("Segoe UI", 12))
+        self.query_entry.setMinimumHeight(34)
         self.query_entry.setMaxLength(500)
         self.query_entry.returnPressed.connect(self.on_search_click)
         self.query_entry.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1915,7 +2145,7 @@ class ImageSearchApp(QMainWindow):
         search_layout.addWidget(self.btn_anchor)
 
         self.anchor_label = QLabel("")
-        self.anchor_label.setStyleSheet(f"color: #aaa; font-size: 9pt;")
+        self.anchor_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
         self.anchor_label.setVisible(False)
         search_layout.addWidget(self.anchor_label)
 
@@ -1936,7 +2166,7 @@ class ImageSearchApp(QMainWindow):
         search_layout.addWidget(self.hybrid_slider)
 
         self.hybrid_val_label = QLabel("0%")
-        self.hybrid_val_label.setStyleSheet(f"color: #aaa; font-size: 9pt;")
+        self.hybrid_val_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
         self.hybrid_val_label.setVisible(False)
         self.hybrid_slider.valueChanged.connect(
             lambda v: self.hybrid_val_label.setText(f"{v}%"))
@@ -1950,12 +2180,18 @@ class ImageSearchApp(QMainWindow):
 
         # --- Controls bar ---
         controls_widget = QWidget()
-        controls_widget.setStyleSheet(f"background-color: {PANEL_BG};")
+        controls_widget.setObjectName("controlsPanel")
+        controls_widget.setStyleSheet(
+            f"QWidget#controlsPanel {{ background-color: {PANEL_BG};"
+            f"  border-bottom: 1px solid {BORDER}; }}"
+        )
         controls_layout = QHBoxLayout(controls_widget)
-        controls_layout.setContentsMargins(8, 4, 8, 4)
-        controls_layout.setSpacing(4)
+        controls_layout.setContentsMargins(10, 5, 10, 5)
+        controls_layout.setSpacing(5)
 
-        controls_layout.addWidget(QLabel("Similarity Score:"))
+        lbl_sim = QLabel("Similarity:")
+        lbl_sim.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
+        controls_layout.addWidget(lbl_sim)
         self.score_slider = QSlider(Qt.Orientation.Horizontal)
         self.score_slider.setRange(0, 100)
         self.score_slider.setValue(15)  # 0.15 default
@@ -1966,8 +2202,10 @@ class ImageSearchApp(QMainWindow):
         controls_layout.addWidget(self.score_slider)
         controls_layout.addWidget(self.score_val_label)
 
-        controls_layout.addSpacing(8)
-        controls_layout.addWidget(QLabel("Results Per Page:"))
+        controls_layout.addSpacing(6)
+        lbl_rpp = QLabel("Per Page:")
+        lbl_rpp.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
+        controls_layout.addWidget(lbl_rpp)
         self.top_n_slider = QSlider(Qt.Orientation.Horizontal)
         self.top_n_slider.setRange(1, 50)
         self.top_n_slider.setValue(3)  # 3*10=30 default
@@ -2006,7 +2244,9 @@ class ImageSearchApp(QMainWindow):
 
         sep1 = QFrame()
         sep1.setFrameShape(QFrame.Shape.VLine)
-        sep1.setStyleSheet(f"color: {BORDER};")
+        sep1.setFixedWidth(1)
+        sep1.setFixedHeight(20)
+        sep1.setStyleSheet(f"background-color: {BORDER}; border: none;")
         controls_layout.addWidget(sep1)
 
         self.show_images_cb = QCheckBox("Images")
@@ -2019,7 +2259,9 @@ class ImageSearchApp(QMainWindow):
 
         sep2 = QFrame()
         sep2.setFrameShape(QFrame.Shape.VLine)
-        sep2.setStyleSheet(f"color: {BORDER};")
+        sep2.setFixedWidth(1)
+        sep2.setFixedHeight(20)
+        sep2.setStyleSheet(f"background-color: {BORDER}; border: none;")
         controls_layout.addWidget(sep2)
 
         self.dedup_video_cb = QCheckBox("Best frame/video")
@@ -2028,10 +2270,14 @@ class ImageSearchApp(QMainWindow):
 
         sep3 = QFrame()
         sep3.setFrameShape(QFrame.Shape.VLine)
-        sep3.setStyleSheet(f"color: {BORDER};")
+        sep3.setFixedWidth(1)
+        sep3.setFixedHeight(20)
+        sep3.setStyleSheet(f"background-color: {BORDER}; border: none;")
         controls_layout.addWidget(sep3)
 
-        controls_layout.addWidget(QLabel("Sort:"))
+        lbl_sort = QLabel("Sort:")
+        lbl_sort.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
+        controls_layout.addWidget(lbl_sort)
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score ↓", "Date (newest)", "Date (oldest)", "Name A→Z", "Name Z→A", "Size ↓"])
         self.sort_combo.setFixedWidth(130)
@@ -2058,8 +2304,12 @@ class ImageSearchApp(QMainWindow):
         self.info_bar.setWordWrap(True)
         self.info_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_bar.setStyleSheet(
-            f"color: {FG}; background-color: #2a2a3a; border: 1px solid #555;"
-            "border-radius: 4px; padding: 4px 8px; font-size: 9pt;"
+            f"color: {FG};"
+            f"background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            f"  stop:0 #1a2235, stop:0.6 #161b22, stop:1 {PANEL_BG});"
+            f"border: 1px solid {BORDER};"
+            f"border-left: 3px solid {ACCENT_SECONDARY};"
+            f"border-radius: 6px; padding: 6px 12px; font-size: 9pt;"
         )
         self.info_bar.setVisible(False)
         main_layout.addWidget(self.info_bar)
@@ -2076,7 +2326,10 @@ class ImageSearchApp(QMainWindow):
         page_nav_layout.addWidget(self.prev_page_btn)
 
         self.page_label = QLabel("")
-        self.page_label.setStyleSheet(f"color: {FG}; font-size: 10pt;")
+        self.page_label.setStyleSheet(
+            f"color: {FG_MUTED}; font-size: 9pt; font-weight: 600;"
+            f"padding: 0 12px;"
+        )
         page_nav_layout.addWidget(self.page_label)
 
         self.show_more_btn = QPushButton("Next Page →")
@@ -2103,10 +2356,15 @@ class ImageSearchApp(QMainWindow):
     # ---- UI helpers ----
 
     def update_status(self, text, color="blue"):
-        color_map = {"green": "#4CAF50", "orange": "#ff9800", "red": "#f44336", "blue": "#3fa9f5"}
+        color_map = {
+            "green":  ACCENT,
+            "orange": ORANGE,
+            "red":    DANGER,
+            "blue":   ACCENT_SECONDARY,
+        }
         c = color_map.get(color, color)
         self.status_label.setText(text)
-        self.status_label.setStyleSheet(f"color: {c};")
+        self.status_label.setStyleSheet(f"color: {c}; font-size: 9pt; font-weight: 600;")
 
     def show_info_bar(self, msg: str):
         """Display a non-blocking informational message in the inline info bar."""
