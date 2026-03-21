@@ -9,3 +9,4 @@ Thumbs.db
 .idea/.claude/
 PhotoSearchPro.py.bak
 /models
+*.safetensors
