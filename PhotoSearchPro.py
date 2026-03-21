@@ -1886,6 +1886,9 @@ class ImageSearchApp(QMainWindow):
         self._anchor_embed = None   # numpy array (D,) if anchor set
         self._anchor_path = None    # str path for display
 
+        # Last image used for image search (enables Re-run)
+        self._last_image_search_path = None
+
         # File-system watcher for auto-incremental index
         self._fs_watcher = QFileSystemWatcher()
         self._fs_debounce_timer = QTimer()
@@ -2158,6 +2161,25 @@ class ImageSearchApp(QMainWindow):
         btn_image = QPushButton("Image")
         btn_image.clicked.connect(self.on_image_click)
         search_layout.addWidget(btn_image)
+
+        self.last_image_label = QLabel("")
+        self.last_image_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
+        self.last_image_label.setToolTip("Last image used for search")
+        self.last_image_label.setVisible(False)
+        search_layout.addWidget(self.last_image_label)
+
+        self.btn_rerun_image = QPushButton("Re-run")
+        self.btn_rerun_image.setToolTip("Re-run image search with the same image")
+        self.btn_rerun_image.clicked.connect(self.on_rerun_image_click)
+        self.btn_rerun_image.setVisible(False)
+        search_layout.addWidget(self.btn_rerun_image)
+
+        self.btn_clear_image_search = QPushButton("✕")
+        self.btn_clear_image_search.setFixedWidth(26)
+        self.btn_clear_image_search.setToolTip("Clear loaded image")
+        self.btn_clear_image_search.clicked.connect(self._clear_image_search)
+        self.btn_clear_image_search.setVisible(False)
+        search_layout.addWidget(self.btn_clear_image_search)
 
         btn_paste = QPushButton("Paste")
         btn_paste.setToolTip("Search by image from clipboard (Ctrl+V)")
@@ -2691,6 +2713,37 @@ class ImageSearchApp(QMainWindow):
         self.hybrid_val_label.setVisible(False)
         self.hybrid_slider.setValue(0)
 
+    def _set_last_image_search(self, path):
+        """Store the last image search path and reveal the Re-run controls."""
+        self._last_image_search_path = path
+        name = os.path.basename(path)
+        if len(name) > 22:
+            name = name[:20] + "…"
+        self.last_image_label.setText(name)
+        self.last_image_label.setVisible(True)
+        self.btn_rerun_image.setVisible(True)
+        self.btn_clear_image_search.setVisible(True)
+
+    def on_rerun_image_click(self):
+        """Re-run image search using the last loaded image."""
+        if not self._last_image_search_path:
+            return
+        if not self.is_safe_to_act(action_name="image search"):
+            return
+        self.cancel_search(clear_ui=True)
+        path = self._last_image_search_path
+        gen = self.search_generation + 1
+        self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
+        self.search_thread.start()
+
+    def _clear_image_search(self):
+        """Clear the loaded image and hide Re-run controls."""
+        self._last_image_search_path = None
+        self.last_image_label.setText("")
+        self.last_image_label.setVisible(False)
+        self.btn_rerun_image.setVisible(False)
+        self.btn_clear_image_search.setVisible(False)
+
     # ---- Feature: Post-search sort ----
 
     def _resort_and_redisplay(self):
@@ -2985,6 +3038,7 @@ class ImageSearchApp(QMainWindow):
             return
         if not os.path.isfile(path):
             return
+        self._set_last_image_search(path)
         self.cancel_search(clear_ui=True)
         gen = self.search_generation + 1
         self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
@@ -4640,6 +4694,7 @@ class ImageSearchApp(QMainWindow):
     def image_search(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open File", "", "Images (*.jpg *.jpeg *.png *.webp)")
         if not path: return
+        self._set_last_image_search(path)
         gen = self.search_generation + 1
         self.search_thread = Thread(target=lambda: self._image_search(path, gen), daemon=True)
         self.search_thread.start()
