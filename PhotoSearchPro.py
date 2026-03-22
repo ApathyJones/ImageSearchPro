@@ -313,6 +313,42 @@ MODEL_REGISTRY = {
         "input_size":       518,
         "requires_hf_auth": True,
     },
+    # ── Specialist models ─────────────────────────────────────────────────────
+    # These are used automatically during auto-rename category scoring and are
+    # NOT shown in the user-facing model selector (specialist_only: True).
+    "fashion-clip": {
+        "label":           "FashionCLIP ViT-B/32",
+        "subtitle":        "~700K fashion images  •  Specialist for Clothing category",
+        "type":            "openclip",
+        "model_name":      "hf-hub:patrickjohncyh/fashion-clip",
+        "pretrained":      "",
+        "has_text":        True,
+        "cache_key":       "FashionCLIP-ViT-B32",
+        "input_size":      224,
+        "specialist_only": True,
+    },
+    "bioclip": {
+        "label":           "BioCLIP ViT-B/16",
+        "subtitle":        "TreeOfLife-10M fine-tuned  •  Specialist for Animal/Nature categories",
+        "type":            "openclip",
+        "model_name":      "hf-hub:imageomics/bioclip",
+        "pretrained":      "",
+        "has_text":        True,
+        "cache_key":       "BioCLIP-ViT-B16",
+        "input_size":      224,
+        "specialist_only": True,
+    },
+    "streetclip": {
+        "label":           "StreetCLIP ViT-L/14",
+        "subtitle":        "Geo/street fine-tuned  •  Specialist for Location category",
+        "type":            "openclip",
+        "model_name":      "hf-hub:geolocal/StreetCLIP",
+        "pretrained":      "",
+        "has_text":        True,
+        "cache_key":       "StreetCLIP-ViT-L14",
+        "input_size":      224,
+        "specialist_only": True,
+    },
 }
 
 DEFAULT_MODEL_KEY = "clip-vit-l-14-laion"
@@ -444,6 +480,15 @@ CATEGORY_PROMPTS = {
     "General Scene": lambda lbl: f"a photo of {lbl.lower()}",
 }
 _DEFAULT_PROMPT = lambda lbl: f"a photo of {lbl.lower()}"  # noqa: E731
+
+# Maps auto-rename category names → specialist model keys.
+# When scoring a category that has an entry here, the app loads (and caches)
+# the specialist model and re-encodes the image group with it, so that both
+# the image embedding and text embedding share the same fine-tuned space.
+CATEGORY_MODEL_MAP = {
+    "Clothing": "fashion-clip",
+    "Location": "streetclip",
+}
 
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
 _DISK_LOCK = threading.Lock()
@@ -1762,7 +1807,7 @@ class ModelSelectorDialog(QDialog):
         )
         self.list_widget.setFont(QFont("Segoe UI", 10))
 
-        self._keys = list(MODEL_REGISTRY.keys())
+        self._keys = [k for k, v in MODEL_REGISTRY.items() if not v.get("specialist_only")]
         for key in self._keys:
             cfg = MODEL_REGISTRY[key]
             badge = "✓ Text + Image" if cfg["has_text"] else "⬛ Image only"
@@ -2397,6 +2442,7 @@ class ImageSearchApp(QMainWindow):
 
         self.clip_model = None
         self.model_loading = False
+        self._specialist_models = {}   # model_key → loaded specialist model instance
         
         self.is_indexing = False
         self.stop_indexing = False
@@ -6078,7 +6124,52 @@ class ImageSearchApp(QMainWindow):
             emb = emb / norm
         return emb, idxs
 
-    def _score_single_category(self, group_emb, cat_name, labels):
+    def _get_specialist_model(self, cat_name):
+        """Return the loaded specialist model for *cat_name*, or None.
+
+        Lazily loads and caches the model on first call.  Any load failure is
+        logged and returns None so the caller falls back to the main model.
+        """
+        model_key = CATEGORY_MODEL_MAP.get(cat_name)
+        if model_key is None:
+            return None
+        if model_key in self._specialist_models:
+            return self._specialist_models[model_key]
+        try:
+            safe_print(f"[RENAME] Loading specialist model '{model_key}' for '{cat_name}'…")
+            model = create_model(model_key)
+            self._specialist_models[model_key] = model
+            safe_print(f"[RENAME] Specialist model '{model_key}' ready.")
+            return model
+        except Exception as e:
+            safe_print(f"[RENAME] Could not load specialist model '{model_key}': {e}")
+            return None
+
+    def _encode_group_with_model(self, file_paths, model):
+        """Re-encode *file_paths* with *model* and return a normalised mean embedding.
+
+        Returns None if no images could be encoded (all missing / unreadable).
+        """
+        embeddings = []
+        for path in file_paths:
+            img = open_image(path)
+            if img is None:
+                continue
+            try:
+                feats = model.encode_image_batch([img])
+                if feats is not None and feats.size > 0:
+                    embeddings.append(feats[0])
+            except Exception as e:
+                safe_print(f"[RENAME] Specialist encode failed for {path}: {e}")
+        if not embeddings:
+            return None
+        emb = np.stack(embeddings).mean(axis=0)
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb = emb / norm
+        return emb
+
+    def _score_single_category(self, group_emb, cat_name, labels, model=None):
         """Score all labels in one category against *group_emb*.
 
         For the Clothing category a second CLIP pass detects the dominant colour
@@ -6087,10 +6178,11 @@ class ImageSearchApp(QMainWindow):
         Returns (best_label, margin) where margin = top_score − category_mean.
         Returns ("", 0.0) on any error.
         """
+        active_model = model if model is not None else self.clip_model
         template = CATEGORY_PROMPTS.get(cat_name, _DEFAULT_PROMPT)
         prompted = [template(lbl) for lbl in labels]
         try:
-            text_embs = self.clip_model.encode_text(prompted)
+            text_embs = active_model.encode_text(prompted)
         except Exception as e:
             safe_print(f"[RENAME] encode_text failed for '{cat_name}': {e}")
             return "", 0.0
@@ -6111,7 +6203,7 @@ class ImageSearchApp(QMainWindow):
                 for c in CLOTHING_COLORS
             ]
             try:
-                color_embs = self.clip_model.encode_text(color_prompts)
+                color_embs = active_model.encode_text(color_prompts)
                 color_sims = color_embs @ group_emb
                 best_color = CLOTHING_COLORS[int(np.argmax(color_sims))]
                 safe_print(
@@ -6144,7 +6236,13 @@ class ImageSearchApp(QMainWindow):
             return ""
         group_emb, _idxs = result
 
-        best_label, _margin = self._score_single_category(group_emb, category_name, labels)
+        specialist = self._get_specialist_model(category_name)
+        if specialist is not None:
+            spec_emb = self._encode_group_with_model(file_paths, specialist)
+            if spec_emb is not None:
+                group_emb = spec_emb
+
+        best_label, _margin = self._score_single_category(group_emb, category_name, labels, model=specialist)
         return best_label
 
     def _auto_name_composite(self, file_paths):
@@ -6167,11 +6265,26 @@ class ImageSearchApp(QMainWindow):
         saved = _load_app_settings().get("rename_custom_categories", {})
         all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
 
+        # Pre-compute a specialist group embedding for each distinct specialist
+        # model that is needed, so we only re-encode the images once per model.
+        specialist_embs = {}  # model_key → specialist group embedding
+        for cat_name in all_cats:
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            if model_key and model_key not in specialist_embs:
+                spec_model = self._get_specialist_model(cat_name)
+                if spec_model is not None:
+                    emb = self._encode_group_with_model(file_paths, spec_model)
+                    if emb is not None:
+                        specialist_embs[model_key] = emb
+
         scored = []   # (margin, cat_name, best_label)
         for cat_name, labels in all_cats.items():
             if not labels:
                 continue
-            best_label, margin = self._score_single_category(group_emb, cat_name, labels)
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            specialist = self._specialist_models.get(model_key) if model_key else None
+            cat_emb = specialist_embs.get(model_key, group_emb)
+            best_label, margin = self._score_single_category(cat_emb, cat_name, labels, model=specialist)
             if best_label:
                 scored.append((margin, cat_name, best_label))
 
