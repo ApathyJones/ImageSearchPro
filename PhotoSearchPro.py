@@ -397,6 +397,33 @@ NUDENET_LABEL_GROUPS = {
     ],
 }
 
+# ── Built-in rename category sets (used for CLIP auto-naming) ─────────────────
+RENAME_CATEGORIES = {
+    "Clothing": [
+        "Red Shirt", "Blue Shirt", "Green Shirt", "White Shirt", "Black Shirt",
+        "T-Shirt", "Blouse", "Dress", "Skirt", "Jeans", "Pants", "Shorts",
+        "Jacket", "Coat", "Hoodie", "Suit", "Swimwear", "Uniform",
+    ],
+    "Location": [
+        "Beach", "Mountain", "Forest", "City Street", "Park", "Desert",
+        "Indoors", "Outdoors", "Office", "Home", "Restaurant", "Mall",
+        "School", "Gym", "Stadium", "Airport", "Hotel", "Garden",
+    ],
+    "Time of Day": [
+        "Morning", "Afternoon", "Evening", "Night",
+        "Sunrise", "Sunset", "Golden Hour", "Blue Hour", "Midday",
+    ],
+    "Weather": [
+        "Sunny", "Cloudy", "Rainy", "Snowy", "Foggy",
+        "Windy", "Overcast", "Clear Sky", "Stormy",
+    ],
+    "General Scene": [
+        "Portrait", "Landscape", "Food", "Architecture", "Animals",
+        "Nature", "Sports", "Travel", "Family", "Celebration",
+        "Work", "Art", "Technology", "Vehicle", "Aerial View",
+    ],
+}
+
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
 _DISK_LOCK = threading.Lock()
 
@@ -1815,6 +1842,319 @@ class FolderDropListWidget(QListWidget):
             event.acceptProposedAction()
         else:
             event.ignore()
+
+
+class BatchRenameDialog(QDialog):
+    """Dialog for batch-renaming a group of image files.
+
+    Parameters
+    ----------
+    parent     : QWidget — parent window
+    file_paths : list[str] — absolute paths to rename
+    suggested  : str — pre-filled base name (spaces OK; will be sanitized on rename)
+    app        : ImageSearchApp — reference for CLIP auto-naming and settings
+    """
+
+    def __init__(self, parent, file_paths, suggested="", app=None):
+        super().__init__(parent)
+        self._file_paths = list(file_paths)
+        self._app = app
+        self.result_pairs = []   # filled on accept: [(old_path, new_path), ...]
+        self.dest_mode = "inplace"
+        self.dest_folder = ""
+
+        self.setWindowTitle(f"Batch Rename — {len(self._file_paths)} file(s)")
+        self.resize(620, 560)
+        layout = QVBoxLayout(self)
+
+        # ── Name row ──────────────────────────────────────────────────────────
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Group name:"))
+        self._name_edit = QLineEdit(suggested)
+        self._name_edit.setPlaceholderText("e.g. Red Shirt  →  Red_Shirt (1).jpg")
+        self._name_edit.textChanged.connect(self._refresh_preview)
+        name_row.addWidget(self._name_edit, stretch=1)
+        layout.addLayout(name_row)
+
+        # ── Auto-name row ──────────────────────────────────────────────────
+        auto_frame = QFrame()
+        auto_frame.setStyleSheet(f"background-color: {PANEL_BG}; border-radius: 4px;")
+        auto_layout = QVBoxLayout(auto_frame)
+        auto_layout.setContentsMargins(8, 6, 8, 6)
+        auto_layout.setSpacing(4)
+
+        cat_row = QHBoxLayout()
+        cat_row.addWidget(QLabel("Auto-name category:"))
+
+        self._cat_combo = QComboBox()
+        built_in_names = list(RENAME_CATEGORIES.keys())
+        self._cat_combo.addItems(built_in_names)
+        # Load saved custom categories from settings
+        self._custom_cats = {}
+        if app is not None:
+            saved = _load_app_settings().get("rename_custom_categories", {})
+            self._custom_cats = {k: v for k, v in saved.items() if isinstance(v, list)}
+        for cname in self._custom_cats:
+            self._cat_combo.addItem(f"[Custom] {cname}")
+        self._cat_combo.addItem("— New Custom Category —")
+        self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
+        cat_row.addWidget(self._cat_combo, stretch=1)
+
+        suggest_btn = QPushButton("Suggest Name")
+        suggest_btn.setToolTip("Use CLIP to find the closest label from the selected category")
+        suggest_btn.clicked.connect(self._run_auto_name)
+        cat_row.addWidget(suggest_btn)
+        auto_layout.addLayout(cat_row)
+
+        # Custom category editor (hidden unless "New Custom Category" is picked)
+        self._custom_frame = QWidget()
+        custom_inner = QVBoxLayout(self._custom_frame)
+        custom_inner.setContentsMargins(0, 0, 0, 0)
+        custom_inner.setSpacing(4)
+
+        cname_row = QHBoxLayout()
+        cname_row.addWidget(QLabel("Category name:"))
+        self._custom_name_edit = QLineEdit()
+        self._custom_name_edit.setPlaceholderText("e.g. My Vacation Shots")
+        cname_row.addWidget(self._custom_name_edit, stretch=1)
+        custom_inner.addLayout(cname_row)
+
+        clabels_row = QHBoxLayout()
+        clabels_row.addWidget(QLabel("Labels (comma-separated):"))
+        self._custom_labels_edit = QLineEdit()
+        self._custom_labels_edit.setPlaceholderText("e.g. Eiffel Tower, Big Ben, Colosseum")
+        clabels_row.addWidget(self._custom_labels_edit, stretch=1)
+        save_cat_btn = QPushButton("Save Category")
+        save_cat_btn.clicked.connect(self._save_custom_category)
+        clabels_row.addWidget(save_cat_btn)
+        custom_inner.addLayout(clabels_row)
+
+        self._custom_frame.setVisible(False)
+        auto_layout.addWidget(self._custom_frame)
+
+        has_text = (
+            app is not None
+            and app.clip_model is not None
+            and getattr(app, "model_has_text", False)
+        )
+        if not has_text:
+            suggest_btn.setEnabled(False)
+            suggest_btn.setToolTip("Auto-naming requires a text-capable model (CLIP or SigLIP2)")
+
+        layout.addWidget(auto_frame)
+
+        # ── Destination ───────────────────────────────────────────────────────
+        dest_group = QGroupBox("Destination")
+        dest_group.setStyleSheet("QGroupBox { font-weight: bold; }")
+        dest_vbox = QVBoxLayout(dest_group)
+
+        self._radio_inplace = QRadioButton("Keep files in their current folder (rename in place)")
+        self._radio_inplace.setChecked(True)
+        self._radio_folder = QRadioButton("Move all files to a new folder named after the group")
+        dest_vbox.addWidget(self._radio_inplace)
+        dest_vbox.addWidget(self._radio_folder)
+
+        self._folder_row = QWidget()
+        folder_inner = QHBoxLayout(self._folder_row)
+        folder_inner.setContentsMargins(20, 0, 0, 0)
+        folder_inner.addWidget(QLabel("Parent location:"))
+        self._dest_path_edit = QLineEdit()
+        # Default to the parent directory of the first file
+        if self._file_paths:
+            self._dest_path_edit.setText(os.path.dirname(self._file_paths[0]))
+        folder_inner.addWidget(self._dest_path_edit, stretch=1)
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(self._browse_dest)
+        folder_inner.addWidget(browse_btn)
+        self._folder_row.setVisible(False)
+        dest_vbox.addWidget(self._folder_row)
+
+        self._radio_folder.toggled.connect(
+            lambda checked: self._folder_row.setVisible(checked))
+        layout.addWidget(dest_group)
+
+        # ── Preview ───────────────────────────────────────────────────────────
+        layout.addWidget(QLabel("Preview (first 8 files):"))
+        self._preview_list = QListWidget()
+        self._preview_list.setMaximumHeight(160)
+        self._preview_list.setStyleSheet(f"background-color: {CARD_BG};")
+        layout.addWidget(self._preview_list)
+
+        # ── Buttons ───────────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        rename_btn = QPushButton("Rename")
+        rename_btn.setProperty("class", "accent")
+        rename_btn.clicked.connect(self._do_rename)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(rename_btn)
+        btn_row.addWidget(cancel_btn)
+        layout.addLayout(btn_row)
+
+        self._refresh_preview()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sanitize(name):
+        """Convert display name to a filesystem-safe base name."""
+        import re
+        name = name.strip()
+        name = re.sub(r'[\\/:*?"<>|]', "", name)  # strip illegal chars
+        name = re.sub(r"\s+", "_", name)           # spaces → underscores
+        return name or "File"
+
+    def _build_target_name(self, base, n, ext):
+        """Return 'base (n).ext' — Windows-style numbering."""
+        return f"{base} ({n}){ext}"
+
+    def _refresh_preview(self):
+        self._preview_list.clear()
+        base_raw = self._name_edit.text()
+        base = self._sanitize(base_raw) if base_raw.strip() else "File"
+        for i, path in enumerate(self._file_paths[:8]):
+            ext = os.path.splitext(path)[1]
+            new_name = self._build_target_name(base, i + 1, ext)
+            old_name = os.path.basename(path)
+            self._preview_list.addItem(f"{old_name}  →  {new_name}")
+
+    def _browse_dest(self):
+        chosen = QFileDialog.getExistingDirectory(
+            self, "Select parent folder for the new group folder",
+            self._dest_path_edit.text() or "")
+        if chosen:
+            self._dest_path_edit.setText(chosen)
+
+    def _on_category_changed(self, idx):
+        total = self._cat_combo.count()
+        is_new_custom = (idx == total - 1)
+        self._custom_frame.setVisible(is_new_custom)
+
+    def _get_current_labels(self):
+        """Return the list of labels for the currently selected category."""
+        idx = self._cat_combo.currentIndex()
+        text = self._cat_combo.currentText()
+        built_in_names = list(RENAME_CATEGORIES.keys())
+        if idx < len(built_in_names):
+            return RENAME_CATEGORIES[built_in_names[idx]]
+        if text.startswith("[Custom] "):
+            cname = text[len("[Custom] "):]
+            return self._custom_cats.get(cname, [])
+        return []
+
+    def _save_custom_category(self):
+        cname = self._custom_name_edit.text().strip()
+        labels_raw = self._custom_labels_edit.text().strip()
+        if not cname:
+            QMessageBox.warning(self, "Missing Name", "Please enter a category name.")
+            return
+        labels = [l.strip() for l in labels_raw.split(",") if l.strip()]
+        if not labels:
+            QMessageBox.warning(self, "No Labels", "Please enter at least one label.")
+            return
+        self._custom_cats[cname] = labels
+        # Persist
+        settings = _load_app_settings()
+        settings["rename_custom_categories"] = self._custom_cats
+        _save_app_settings(settings)
+        # Add to combo if not already there
+        combo_text = f"[Custom] {cname}"
+        existing = [self._cat_combo.itemText(i) for i in range(self._cat_combo.count())]
+        if combo_text not in existing:
+            # Insert before the last item ("— New Custom Category —")
+            insert_pos = self._cat_combo.count() - 1
+            self._cat_combo.insertItem(insert_pos, combo_text)
+            self._cat_combo.setCurrentIndex(insert_pos)
+        else:
+            self._cat_combo.setCurrentText(combo_text)
+        QMessageBox.information(self, "Saved", f"Custom category '{cname}' saved.")
+
+    def _run_auto_name(self):
+        if self._app is None or self._app.clip_model is None:
+            return
+        labels = self._get_current_labels()
+        if not labels:
+            QMessageBox.information(self, "No Labels",
+                "The selected category has no labels. "
+                "For a custom category, enter and save labels first.")
+            return
+        best = self._app._auto_name_group(self._file_paths, labels)
+        if best:
+            self._name_edit.setText(best)
+
+    # ── Core rename ───────────────────────────────────────────────────────────
+
+    def _do_rename(self):
+        base_raw = self._name_edit.text().strip()
+        if not base_raw:
+            QMessageBox.warning(self, "No Name", "Please enter a group name.")
+            return
+        base = self._sanitize(base_raw)
+
+        if self._radio_folder.isChecked():
+            parent = self._dest_path_edit.text().strip()
+            if not parent or not os.path.isdir(parent):
+                QMessageBox.warning(self, "Invalid Folder",
+                    "Please choose a valid parent folder.")
+                return
+            dest_mode = "new_folder"
+            dest_folder = os.path.join(parent, base)
+        else:
+            dest_mode = "inplace"
+            dest_folder = ""
+
+        if self._app is not None:
+            pairs, errors = self._app._batch_rename_files(
+                self._file_paths, base, dest_mode, dest_folder)
+        else:
+            pairs, errors = _batch_rename_files_standalone(
+                self._file_paths, base, dest_mode, dest_folder)
+
+        if errors:
+            QMessageBox.warning(self, "Some Errors",
+                f"{len(pairs)} file(s) renamed.\n"
+                f"{len(errors)} error(s):\n" + "\n".join(errors[:5]))
+        else:
+            QMessageBox.information(self, "Done",
+                f"{len(pairs)} file(s) renamed successfully.")
+
+        self.result_pairs = pairs
+        self.accept()
+
+
+def _batch_rename_files_standalone(file_paths, base, dest_mode, dest_folder):
+    """Rename files without an app reference (used when app is None)."""
+    import re, shutil as _shutil
+    pairs, errors = [], []
+    if dest_mode == "new_folder":
+        try:
+            os.makedirs(dest_folder, exist_ok=True)
+        except Exception as e:
+            return [], [f"Cannot create folder: {e}"]
+    for i, path in enumerate(file_paths, start=1):
+        if not os.path.exists(path):
+            errors.append(f"Not found: {os.path.basename(path)}")
+            continue
+        ext = os.path.splitext(path)[1]
+        new_name = f"{base} ({i}){ext}"
+        if dest_mode == "new_folder":
+            new_path = os.path.join(dest_folder, new_name)
+        else:
+            new_path = os.path.join(os.path.dirname(path), new_name)
+        # Avoid overwriting
+        if os.path.exists(new_path) and os.path.abspath(new_path) != os.path.abspath(path):
+            errors.append(f"Target exists, skipped: {new_name}")
+            continue
+        try:
+            if dest_mode == "new_folder":
+                _shutil.move(path, new_path)
+            else:
+                os.rename(path, new_path)
+            pairs.append((path, new_path))
+        except Exception as e:
+            errors.append(f"{os.path.basename(path)}: {e}")
+    return pairs, errors
 
 
 class ImageSearchApp(QMainWindow):
@@ -5342,6 +5682,7 @@ class ImageSearchApp(QMainWindow):
         menu.addSeparator()
         menu.addAction("Copy Selected", self.export_selected)
         menu.addAction("Move Selected", self.move_selected)
+        menu.addAction("Rename Selected…", self.rename_selected)
         menu.addAction("Delete Selected", self.delete_selected)
         menu.exec(global_pos)
 
@@ -5359,6 +5700,7 @@ class ImageSearchApp(QMainWindow):
         menu.addSeparator()
         menu.addAction("Copy", self.export_selected)
         menu.addAction("Move", self.move_selected)
+        menu.addAction("Rename Selected…", self.rename_selected)
         menu.addAction("Delete", self.delete_selected)
         menu.exec(global_pos)
 
@@ -5484,6 +5826,125 @@ class ImageSearchApp(QMainWindow):
         if errors:
             QMessageBox.critical(self, "Delete Errors",
                 f"{len(errors)} file(s) could not be deleted:\n\n" + "\n".join(errors[:8]))
+
+    # ── Batch rename ──────────────────────────────────────────────────────────
+
+    def _batch_rename_files(self, file_paths, base, dest_mode, dest_folder):
+        """Rename *file_paths* using Windows-style numbering.
+
+        Parameters
+        ----------
+        file_paths  : list[str] — absolute paths to rename
+        base        : str — sanitized base name (underscores, no spaces)
+        dest_mode   : "inplace" | "new_folder"
+        dest_folder : str — full path to the destination folder (new_folder mode only)
+
+        Returns
+        -------
+        pairs  : list[(old_path, new_path)] — successfully renamed files
+        errors : list[str] — human-readable error messages
+        """
+        pairs, errors = [], []
+
+        if dest_mode == "new_folder":
+            try:
+                os.makedirs(dest_folder, exist_ok=True)
+            except Exception as e:
+                return [], [f"Cannot create folder '{dest_folder}': {e}"]
+
+        for i, path in enumerate(file_paths, start=1):
+            if not os.path.exists(path):
+                errors.append(f"Not found: {os.path.basename(path)}")
+                continue
+            ext = os.path.splitext(path)[1]
+            new_name = f"{base} ({i}){ext}"
+            if dest_mode == "new_folder":
+                new_path = os.path.join(dest_folder, new_name)
+            else:
+                new_path = os.path.join(os.path.dirname(path), new_name)
+
+            if (os.path.exists(new_path)
+                    and os.path.abspath(new_path) != os.path.abspath(path)):
+                errors.append(f"Target exists, skipped: {new_name}")
+                continue
+
+            try:
+                if dest_mode == "new_folder":
+                    shutil.move(path, new_path)
+                else:
+                    os.rename(path, new_path)
+                pairs.append((path, new_path))
+            except Exception as e:
+                errors.append(f"{os.path.basename(path)}: {e}")
+
+        # ── Sync the in-memory index ──────────────────────────────────────────
+        if pairs:
+            old_to_new = {old: new for old, new in pairs}
+            self.image_paths = [
+                old_to_new.get(p, p) for p in self.image_paths
+            ]
+            # Update thumbnail cache keys
+            for old, new in pairs:
+                if old in self.thumbnail_images:
+                    self.thumbnail_images[new] = self.thumbnail_images.pop(old)
+            # Update selected_images set
+            self.selected_images = {
+                old_to_new.get(p, p) for p in self.selected_images
+            }
+            # Update displayed card paths
+            for card in self._get_all_cards():
+                old_p = getattr(card, '_image_path', None)
+                if old_p and old_p in old_to_new:
+                    card._image_path = old_to_new[old_p]
+
+        return pairs, errors
+
+    def _auto_name_group(self, file_paths, labels):
+        """Use CLIP text embeddings to find the closest label to a group of images.
+
+        Computes the average image embedding for *file_paths* (using the
+        already-indexed embeddings), then returns the label whose text embedding
+        is nearest (cosine similarity).
+
+        Returns the best-matching label string, or "" if no embeddings available.
+        """
+        if self.clip_model is None or self.image_embeddings is None:
+            return ""
+        if not labels:
+            return ""
+
+        # Build path→index lookup
+        path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
+        idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
+        if not idxs:
+            return ""
+
+        group_emb = self.image_embeddings[idxs].mean(axis=0)
+        norm = np.linalg.norm(group_emb)
+        if norm > 0:
+            group_emb = group_emb / norm
+
+        try:
+            text_embs = self.clip_model.encode_text(labels)  # (N, D)
+        except Exception as e:
+            safe_print(f"[RENAME] Text encode failed: {e}")
+            return ""
+
+        sims = text_embs @ group_emb
+        best_idx = int(np.argmax(sims))
+        return labels[best_idx]
+
+    def rename_selected(self):
+        """Batch-rename the currently selected images from the main search view."""
+        if not self.selected_images:
+            QMessageBox.information(self, "Info", "No images selected.")
+            return
+        paths = sorted(self.selected_images)
+        dlg = BatchRenameDialog(self, paths, suggested="", app=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_pairs:
+            self._remove_cards_from_ui([old for old, _ in dlg.result_pairs])
+            self.update_status(
+                f"Renamed {len(dlg.result_pairs)} file(s)", "green")
 
     def show_index_info(self):
         if self.folders and len(self.folders) > 1:
@@ -6016,6 +6477,15 @@ class ImageSearchApp(QMainWindow):
 
             grp_hdr.addStretch()
 
+            def _rename_group(g=group):
+                paths = [ap for ap, _rp, _img in g]
+                rename_dlg = BatchRenameDialog(dlg, paths, suggested=f"Group_{grp_idx+1}", app=self)
+                rename_dlg.exec()
+
+            rename_grp_btn = QPushButton("Rename Group…")
+            rename_grp_btn.clicked.connect(lambda _checked=False, g=group: _rename_group(g))
+            grp_hdr.addWidget(rename_grp_btn)
+
             keep_btn = QPushButton("Keep First, Check Rest")
             keep_btn.clicked.connect(lambda _checked=False, g=group: _check_rest(g))
             grp_hdr.addWidget(keep_btn)
@@ -6089,6 +6559,7 @@ class ImageSearchApp(QMainWindow):
             "Delete (Recycle Bin)",
             "Move to Folder…",
             "Move into Group Subfolders…",
+            "Rename Checked Files…",
         ])
         action_combo.setMinimumWidth(240)
         action_combo.currentIndexChanged.connect(lambda _: _update_count())
@@ -6236,6 +6707,14 @@ class ImageSearchApp(QMainWindow):
                 QMessageBox.information(dlg, "Done",
                     f"Moved {len(moved)} file(s) into group subfolders under:\n{dest_root}")
 
+        def _do_rename_checked():
+            to_rename = _checked_paths()
+            if not to_rename:
+                QMessageBox.information(dlg, "Nothing Checked", "No files are checked.")
+                return
+            rename_dlg = BatchRenameDialog(dlg, to_rename, suggested="Group", app=self)
+            rename_dlg.exec()
+
         def _apply():
             idx = action_combo.currentIndex()
             if idx == 0:
@@ -6244,6 +6723,8 @@ class ImageSearchApp(QMainWindow):
                 _do_move_to_folder()
             elif idx == 2:
                 _do_move_to_group_subfolders()
+            elif idx == 3:
+                _do_rename_checked()
 
         apply_btn.clicked.connect(_apply)
         dlg.exec()
@@ -6468,6 +6949,16 @@ class ImageSearchApp(QMainWindow):
             view_btn = QPushButton("View Album")
             view_btn.clicked.connect(lambda _, fn=view_album: fn())
             card_layout.addWidget(view_btn)
+
+            def rename_album(members=info["members"], album_num=idx + 1):
+                paths = [self.image_paths[i] for i in members]
+                rename_dlg = BatchRenameDialog(
+                    dlg, paths, suggested=f"Album_{album_num}", app=self)
+                rename_dlg.exec()
+
+            rename_btn = QPushButton("Rename…")
+            rename_btn.clicked.connect(lambda _, fn=rename_album: fn())
+            card_layout.addWidget(rename_btn)
 
             grid_layout.addWidget(card, row, col)
 
@@ -6754,6 +7245,16 @@ class ImageSearchApp(QMainWindow):
             view_btn = QPushButton("View Images")
             view_btn.clicked.connect(lambda _, fn=_view_bucket: fn())
             card_layout.addWidget(view_btn)
+
+            def _rename_bucket(lbl=label, ents=entries):
+                paths = [p for p, _s in ents]
+                clean_label = lbl.replace("_", " ").title()
+                rename_dlg = BatchRenameDialog(dlg, paths, suggested=clean_label, app=self)
+                rename_dlg.exec()
+
+            rename_btn = QPushButton("Rename…")
+            rename_btn.clicked.connect(lambda _, fn=_rename_bucket: fn())
+            card_layout.addWidget(rename_btn)
 
             grid_layout.addWidget(card, row, col)
 
