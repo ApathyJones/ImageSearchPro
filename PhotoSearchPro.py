@@ -1945,34 +1945,63 @@ class BatchRenameDialog(QDialog):
         auto_layout.setContentsMargins(8, 6, 8, 6)
         auto_layout.setSpacing(4)
 
-        cat_row = QHBoxLayout()
-        cat_row.addWidget(QLabel("Auto-name category:"))
+        # ── Category checkboxes ────────────────────────────────────────────
+        cat_header_row = QHBoxLayout()
+        cat_header_row.addWidget(QLabel("Auto-name categories:"))
+        cat_header_row.addStretch()
+        select_all_btn = QPushButton("All")
+        select_all_btn.setFlat(True)
+        select_none_btn = QPushButton("None")
+        select_none_btn.setFlat(True)
+        cat_header_row.addWidget(select_all_btn)
+        cat_header_row.addWidget(select_none_btn)
+        auto_layout.addLayout(cat_header_row)
 
-        self._cat_combo = QComboBox()
-        # "Auto" mode is first so it is the default
-        self._cat_combo.addItem("Auto (All Categories)")
-        built_in_names = list(RENAME_CATEGORIES.keys())
-        self._cat_combo.addItems(built_in_names)
+        self._cat_checkboxes: dict[str, QCheckBox] = {}
+        cb_row = QHBoxLayout()
+        for cat_name in RENAME_CATEGORIES:
+            cb = QCheckBox(cat_name)
+            cb.setChecked(True)
+            self._cat_checkboxes[cat_name] = cb
+            cb_row.addWidget(cb)
+        cb_row.addStretch()
+        auto_layout.addLayout(cb_row)
+
         # Load saved custom categories from settings
-        self._custom_cats = {}
+        self._custom_cats: dict[str, list] = {}
         if app is not None:
             saved = _load_app_settings().get("rename_custom_categories", {})
             self._custom_cats = {k: v for k, v in saved.items() if isinstance(v, list)}
-        for cname in self._custom_cats:
-            self._cat_combo.addItem(f"[Custom] {cname}")
-        self._cat_combo.addItem("— New Custom Category —")
-        self._cat_combo.currentIndexChanged.connect(self._on_category_changed)
-        cat_row.addWidget(self._cat_combo, stretch=1)
 
+        self._custom_cat_checkboxes: dict[str, QCheckBox] = {}
+        self._custom_cb_row = QWidget()
+        self._custom_cb_layout = QHBoxLayout(self._custom_cb_row)
+        self._custom_cb_layout.setContentsMargins(0, 0, 0, 0)
+        for cname in self._custom_cats:
+            cb = QCheckBox(f"[Custom] {cname}")
+            cb.setChecked(True)
+            self._custom_cat_checkboxes[cname] = cb
+            self._custom_cb_layout.addWidget(cb)
+        self._custom_cb_layout.addStretch()
+        self._custom_cb_row.setVisible(bool(self._custom_cats))
+        auto_layout.addWidget(self._custom_cb_row)
+
+        # Wire Select All / None to every checkbox
+        def _all_cbs():
+            return list(self._cat_checkboxes.values()) + list(self._custom_cat_checkboxes.values())
+        select_all_btn.clicked.connect(lambda: [cb.setChecked(True)  for cb in _all_cbs()])
+        select_none_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in _all_cbs()])
+
+        suggest_row = QHBoxLayout()
         suggest_btn = QPushButton("Suggest Name")
         suggest_btn.setToolTip(
-            "Auto: scores every category and combines the top confident matches\n"
-            "Single category: picks the best label using a domain-specific prompt")
+            "Scores each checked category and combines the top confident matches")
         suggest_btn.clicked.connect(self._run_auto_name)
-        cat_row.addWidget(suggest_btn)
-        auto_layout.addLayout(cat_row)
+        suggest_row.addWidget(suggest_btn)
+        suggest_row.addStretch()
+        auto_layout.addLayout(suggest_row)
 
-        # Custom category editor (hidden unless "New Custom Category" is picked)
+        # Custom category editor (hidden unless expanded via "+ New Custom Category")
         self._custom_frame = QWidget()
         custom_inner = QVBoxLayout(self._custom_frame)
         custom_inner.setContentsMargins(0, 0, 0, 0)
@@ -1996,6 +2025,12 @@ class BatchRenameDialog(QDialog):
         custom_inner.addLayout(clabels_row)
 
         self._custom_frame.setVisible(False)
+
+        new_cat_btn = QPushButton("+ New Custom Category")
+        new_cat_btn.setFlat(True)
+        new_cat_btn.clicked.connect(
+            lambda: self._custom_frame.setVisible(not self._custom_frame.isVisible()))
+        auto_layout.addWidget(new_cat_btn)
         auto_layout.addWidget(self._custom_frame)
 
         has_text = (
@@ -2092,26 +2127,6 @@ class BatchRenameDialog(QDialog):
         if chosen:
             self._dest_path_edit.setText(chosen)
 
-    def _on_category_changed(self, idx):
-        total = self._cat_combo.count()
-        is_new_custom = (idx == total - 1)
-        self._custom_frame.setVisible(is_new_custom)
-
-    def _get_current_labels(self):
-        """Return (category_name, labels) for the currently selected category.
-
-        Returns ("", []) for the Auto mode and ("", []) for the custom editor row.
-        """
-        text = self._cat_combo.currentText()
-        if text == "Auto (All Categories)":
-            return "", []
-        if text in RENAME_CATEGORIES:
-            return text, RENAME_CATEGORIES[text]
-        if text.startswith("[Custom] "):
-            cname = text[len("[Custom] "):]
-            return cname, self._custom_cats.get(cname, [])
-        return "", []
-
     def _save_custom_category(self):
         cname = self._custom_name_edit.text().strip()
         labels_raw = self._custom_labels_edit.text().strip()
@@ -2127,32 +2142,30 @@ class BatchRenameDialog(QDialog):
         settings = _load_app_settings()
         settings["rename_custom_categories"] = self._custom_cats
         _save_app_settings(settings)
-        # Add to combo if not already there
-        combo_text = f"[Custom] {cname}"
-        existing = [self._cat_combo.itemText(i) for i in range(self._cat_combo.count())]
-        if combo_text not in existing:
-            # Insert before the last item ("— New Custom Category —")
-            insert_pos = self._cat_combo.count() - 1
-            self._cat_combo.insertItem(insert_pos, combo_text)
-            self._cat_combo.setCurrentIndex(insert_pos)
-        else:
-            self._cat_combo.setCurrentText(combo_text)
+        # Add a checkbox if not already present
+        if cname not in self._custom_cat_checkboxes:
+            cb = QCheckBox(f"[Custom] {cname}")
+            cb.setChecked(True)
+            self._custom_cat_checkboxes[cname] = cb
+            # Insert before the stretch item
+            self._custom_cb_layout.insertWidget(
+                self._custom_cb_layout.count() - 1, cb)
+            self._custom_cb_row.setVisible(True)
+        self._custom_frame.setVisible(False)
+        self._custom_name_edit.clear()
+        self._custom_labels_edit.clear()
         QMessageBox.information(self, "Saved", f"Custom category '{cname}' saved.")
 
     def _run_auto_name(self):
         if self._app is None or self._app.clip_model is None:
             return
-        if self._cat_combo.currentText() == "Auto (All Categories)":
-            best = self._app._auto_name_composite(self._file_paths)
-        else:
-            cat_name, labels = self._get_current_labels()
-            if not labels:
-                QMessageBox.information(self, "No Labels",
-                    "The selected category has no labels. "
-                    "For a custom category, enter and save labels first.")
-                return
-            best = self._app._auto_name_group(self._file_paths, labels,
-                                               category_name=cat_name)
+        enabled = [name for name, cb in self._cat_checkboxes.items() if cb.isChecked()]
+        enabled += [name for name, cb in self._custom_cat_checkboxes.items() if cb.isChecked()]
+        if not enabled:
+            QMessageBox.information(self, "No Categories",
+                "Please check at least one category.")
+            return
+        best = self._app._auto_name_composite(self._file_paths, enabled_cats=enabled)
         if best:
             self._name_edit.setText(best)
 
@@ -6234,13 +6247,15 @@ class ImageSearchApp(QMainWindow):
         best_label, _margin = self._score_single_category(group_emb, category_name, labels, model=specialist)
         return best_label
 
-    def _auto_name_composite(self, file_paths):
-        """Score every built-in (and custom) category and combine the confident
+    def _auto_name_composite(self, file_paths, enabled_cats=None):
+        """Score built-in (and custom) categories and combine the confident
         winners into a descriptive multi-word name such as "Beach Midday Purple Bikini".
 
         Uses the margin (top score − category mean) to filter out categories
         where no label clearly stands out.  The top 3 confident categories are
         combined in confidence order.
+
+        enabled_cats: optional list of category names to score; None means all.
         """
         if self.clip_model is None or self.image_embeddings is None:
             return ""
@@ -6253,6 +6268,8 @@ class ImageSearchApp(QMainWindow):
         all_cats = dict(RENAME_CATEGORIES)
         saved = _load_app_settings().get("rename_custom_categories", {})
         all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
+        if enabled_cats is not None:
+            all_cats = {k: v for k, v in all_cats.items() if k in enabled_cats}
 
         # Pre-compute a specialist group embedding for each distinct specialist
         # model that is needed, so we only re-encode the images once per model.
