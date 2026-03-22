@@ -456,6 +456,21 @@ CLOTHING_COLORS = [
     "White", "Black", "Grey", "Brown", "Beige", "Navy", "Teal", "Maroon",
 ]
 
+# Clothing label slots — items within a slot are mutually exclusive but items
+# from different slots can all appear in the same image.
+# • top / bottom are independent layers of an outfit.
+# • fullbody items replace top+bottom when they win.
+# • outer layers (jackets, coats …) combine freely with everything else.
+CLOTHING_SLOTS = {
+    "top":      ["T-Shirt", "Shirt", "Blouse", "Tank Top", "Crop Top", "Sports Bra"],
+    "bottom":   ["Jeans", "Trousers", "Shorts", "Skirt", "Leggings"],
+    "fullbody": ["Dress", "Bikini", "One-Piece Swimsuit", "Swimwear", "Uniform", "Pyjamas", "Suit"],
+    "outer":    ["Jacket", "Coat", "Hoodie", "Cardigan", "Vest"],
+}
+# Minimum per-slot margin (slot-winner score − slot mean) to treat that slot
+# as "visible" in the image.  Lower = more permissive.
+_CLOTHING_SLOT_THRESHOLD = 0.01
+
 # Per-category CLIP prompt templates.
 # Domain-specific phrasing aligns text embeddings much more precisely with
 # image embeddings than the generic "a photo of X" template.
@@ -6299,26 +6314,69 @@ class ImageSearchApp(QMainWindow):
         margin = best_score - float(sims.mean())
         best_label = labels[best_idx]
 
-        # ── Clothing: two-pass colour detection ──────────────────────────────
-        # Re-score each colour using the specific garment type already found so
-        # CLIP considers both together: "a person wearing purple bikini" rather
-        # than the generic "a person wearing purple coloured clothing".
+        # ── Clothing: multi-slot detection + per-item colour pass ─────────────
+        # Split garment types into independent slots (top / bottom / full-body /
+        # outerwear) and pick the winner of each visible slot, so an outfit like
+        # "Blue Jeans + White T-Shirt + Black Jacket" is fully captured rather
+        # than collapsing to a single item.
         if cat_name == "Clothing":
-            color_prompts = [
-                f"a person wearing {c.lower()} {best_label.lower()}"
-                for c in CLOTHING_COLORS
-            ]
-            try:
-                color_embs = active_model.encode_text(color_prompts)
-                color_sims = color_embs @ group_emb
-                best_color = CLOTHING_COLORS[int(np.argmax(color_sims))]
-                safe_print(
-                    f"[RENAME] Clothing colour pass → '{best_color}' "
-                    f"(score {float(color_sims.max()):.3f})"
-                )
-                best_label = f"{best_color} {best_label}"
-            except Exception as e:
-                safe_print(f"[RENAME] Colour pass failed: {e}")
+            label_to_sim = {lbl: float(sims[i]) for i, lbl in enumerate(labels)}
+
+            def _slot_winner(slot_labels):
+                """Best label + its score for one slot."""
+                slot_sims = np.array([label_to_sim.get(l, -1.0) for l in slot_labels])
+                idx = int(np.argmax(slot_sims))
+                score = float(slot_sims[idx])
+                slot_margin = score - float(slot_sims.mean())
+                return slot_labels[idx], score, slot_margin
+
+            def _colorise(garment):
+                """Return 'Color Garment' via a targeted colour-vs-garment prompt."""
+                try:
+                    color_prompts = [
+                        f"a person wearing {c.lower()} {garment.lower()}"
+                        for c in CLOTHING_COLORS
+                    ]
+                    cembs = active_model.encode_text(color_prompts)
+                    csims = cembs @ group_emb
+                    col = CLOTHING_COLORS[int(np.argmax(csims))]
+                    safe_print(
+                        f"[RENAME] Colour → '{col} {garment}' "
+                        f"(score {float(csims.max()):.3f})"
+                    )
+                    return f"{col} {garment}"
+                except Exception as ce:
+                    safe_print(f"[RENAME] Colour pass failed for '{garment}': {ce}")
+                    return garment
+
+            fb_lbl,  fb_score,  fb_margin  = _slot_winner(CLOTHING_SLOTS["fullbody"])
+            top_lbl, top_score, top_margin = _slot_winner(CLOTHING_SLOTS["top"])
+            bot_lbl, bot_score, bot_margin = _slot_winner(CLOTHING_SLOTS["bottom"])
+            out_lbl, out_score, out_margin = _slot_winner(CLOTHING_SLOTS["outer"])
+
+            chosen = []
+
+            # Full-body item wins when it outscores BOTH the top and bottom slot
+            # winners — meaning a dress/swimsuit/suit dominates the outfit.
+            if (fb_margin >= _CLOTHING_SLOT_THRESHOLD
+                    and fb_score >= top_score
+                    and fb_score >= bot_score):
+                chosen.append(_colorise(fb_lbl))
+            else:
+                if top_margin >= _CLOTHING_SLOT_THRESHOLD:
+                    chosen.append(_colorise(top_lbl))
+                if bot_margin >= _CLOTHING_SLOT_THRESHOLD:
+                    chosen.append(_colorise(bot_lbl))
+
+            # Outerwear is an independent layer — add it regardless of the above.
+            if out_margin >= _CLOTHING_SLOT_THRESHOLD:
+                chosen.append(_colorise(out_lbl))
+
+            if chosen:
+                best_label = " + ".join(chosen)
+            else:
+                # Fallback: just colour the single argmax winner as before.
+                best_label = _colorise(best_label)
 
         safe_print(
             f"[RENAME] '{cat_name}' → '{best_label}' "
