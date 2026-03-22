@@ -741,11 +741,18 @@ def open_image(path):
         img = img.convert("RGB")
     return img
 
+_log_emitter = None  # set to a _LogSignalEmitter instance by ImageSearchApp.__init__
+
 def safe_print(text, end='\n'):
     try:
         print(text, end=end)
     except:
         pass
+    if _log_emitter is not None:
+        try:
+            _log_emitter.message.emit(str(text))
+        except:
+            pass
 
 def pil_to_pixmap(pil_img):
     """Convert PIL Image to QPixmap via numpy bridge."""
@@ -2157,6 +2164,117 @@ def _batch_rename_files_standalone(file_paths, base, dest_mode, dest_folder):
     return pairs, errors
 
 
+# ── In-app log window ─────────────────────────────────────────────────────────
+
+class _LogSignalEmitter(QObject):
+    """Emits log lines as a Qt signal (safe to call from any thread).
+
+    Also implements the file-like interface (write/flush) so it can be
+    assigned to sys.stderr to capture Python tracebacks.
+    """
+    message = pyqtSignal(str)
+
+    def write(self, text):
+        text = text.rstrip("\n")
+        if text:
+            self.message.emit(text)
+
+    def flush(self):
+        pass
+
+
+class LogWindow(QDialog):
+    """Non-modal floating window that displays all safe_print / stderr output."""
+
+    MAX_LINES = 5000
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Application Log")
+        self.resize(860, 440)
+        # Keep the window on top of the main window but allow it to be minimised
+        self.setWindowFlags(
+            Qt.WindowType.Window |
+            Qt.WindowType.WindowMinimizeButtonHint |
+            Qt.WindowType.WindowCloseButtonHint
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+
+        self._text = QPlainTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setFont(QFont("Consolas", 9))
+        self._text.setMaximumBlockCount(self.MAX_LINES)
+        self._text.setStyleSheet(
+            "QPlainTextEdit {"
+            "  background-color: #0d1117;"
+            "  color: #c9d1d9;"
+            "  border: none;"
+            "  selection-background-color: #264f78;"
+            "}"
+        )
+        layout.addWidget(self._text)
+
+        btn_row = QHBoxLayout()
+
+        self._auto_scroll_cb = QCheckBox("Auto-scroll")
+        self._auto_scroll_cb.setChecked(True)
+        btn_row.addWidget(self._auto_scroll_cb)
+
+        btn_row.addStretch()
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedWidth(70)
+        clear_btn.clicked.connect(self._text.clear)
+        btn_row.addWidget(clear_btn)
+
+        copy_btn = QPushButton("Copy All")
+        copy_btn.setFixedWidth(80)
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText(self._text.toPlainText()))
+        btn_row.addWidget(copy_btn)
+
+        save_btn = QPushButton("Save…")
+        save_btn.setFixedWidth(70)
+        save_btn.clicked.connect(self._save_log)
+        btn_row.addWidget(save_btn)
+
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(70)
+        close_btn.clicked.connect(self.hide)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+
+    def append_line(self, text):
+        """Slot — always called on the main thread via queued connection."""
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._text.appendPlainText(f"[{ts}]  {text}")
+        if self._auto_scroll_cb.isChecked():
+            sb = self._text.verticalScrollBar()
+            sb.setValue(sb.maximum())
+
+    def closeEvent(self, event):
+        """Hide rather than destroy so log history is preserved."""
+        event.ignore()
+        self.hide()
+
+    def _save_log(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Log File", "photosearchpro.log",
+            "Log files (*.log);;Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._text.toPlainText())
+        except Exception as e:
+            QMessageBox.warning(self, "Save Failed", str(e))
+
+
 class ImageSearchApp(QMainWindow):
     # Used by _safe_after to marshal arbitrary callables to the main thread.
     # Emitting from a background thread automatically uses a queued connection
@@ -2168,6 +2286,14 @@ class ImageSearchApp(QMainWindow):
         self._dispatch_signal.connect(self._dispatch_invoke)
         self.setWindowTitle("PhotoSearchPro - AI Media Search")
         self.resize(1400, 900)
+
+        # ── Log window (set up before anything else so startup messages appear) ─
+        global _log_emitter
+        _log_emitter = _LogSignalEmitter()
+        self._log_window = LogWindow(self)
+        _log_emitter.message.connect(self._log_window.append_line)
+        # Redirect stderr so Python tracebacks are captured too
+        sys.stderr = _log_emitter
 
         if os.name == 'nt':
             self.apply_dark_title_bar()
@@ -2467,6 +2593,11 @@ class ImageSearchApp(QMainWindow):
         )
         btn_info.clicked.connect(self.show_index_info)
         toolbar_layout.addWidget(btn_info)
+
+        btn_logs = QPushButton("Logs")
+        btn_logs.setToolTip("Show the application log window")
+        btn_logs.clicked.connect(self._show_log_window)
+        toolbar_layout.addWidget(btn_logs)
 
         main_layout.addWidget(toolbar_widget)
 
@@ -5945,6 +6076,11 @@ class ImageSearchApp(QMainWindow):
             self._remove_cards_from_ui([old for old, _ in dlg.result_pairs])
             self.update_status(
                 f"Renamed {len(dlg.result_pairs)} file(s)", "green")
+
+    def _show_log_window(self):
+        self._log_window.show()
+        self._log_window.raise_()
+        self._log_window.activateWindow()
 
     def show_index_info(self):
         if self.folders and len(self.folders) > 1:
