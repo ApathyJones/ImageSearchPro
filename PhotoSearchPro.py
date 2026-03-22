@@ -402,7 +402,7 @@ RENAME_CATEGORIES = {
     "Clothing": [
         "Red Shirt", "Blue Shirt", "Green Shirt", "White Shirt", "Black Shirt",
         "T-Shirt", "Blouse", "Dress", "Skirt", "Jeans", "Pants", "Shorts",
-        "Jacket", "Coat", "Hoodie", "Suit", "Swimwear", "Uniform",
+        "Jacket", "Coat", "Hoodie", "Suit", "Swimwear", "Bikini", "Uniform",
     ],
     "Location": [
         "Beach", "Mountain", "Forest", "City Street", "Park", "Desert",
@@ -423,6 +423,18 @@ RENAME_CATEGORIES = {
         "Work", "Art", "Technology", "Vehicle", "Aerial View",
     ],
 }
+
+# Per-category CLIP prompt templates.
+# Domain-specific phrasing aligns text embeddings much more precisely with
+# image embeddings than the generic "a photo of X" template.
+CATEGORY_PROMPTS = {
+    "Clothing":      lambda lbl: f"a person wearing {lbl.lower()}",
+    "Location":      lambda lbl: f"a photo taken at {lbl.lower()}",
+    "Time of Day":   lambda lbl: f"a photo taken during {lbl.lower()}",
+    "Weather":       lambda lbl: f"a {lbl.lower()} day outdoors",
+    "General Scene": lambda lbl: f"a photo of {lbl.lower()}",
+}
+_DEFAULT_PROMPT = lambda lbl: f"a photo of {lbl.lower()}"  # noqa: E731
 
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
 _DISK_LOCK = threading.Lock()
@@ -1894,6 +1906,8 @@ class BatchRenameDialog(QDialog):
         cat_row.addWidget(QLabel("Auto-name category:"))
 
         self._cat_combo = QComboBox()
+        # "Auto" mode is first so it is the default
+        self._cat_combo.addItem("Auto (All Categories)")
         built_in_names = list(RENAME_CATEGORIES.keys())
         self._cat_combo.addItems(built_in_names)
         # Load saved custom categories from settings
@@ -1908,7 +1922,9 @@ class BatchRenameDialog(QDialog):
         cat_row.addWidget(self._cat_combo, stretch=1)
 
         suggest_btn = QPushButton("Suggest Name")
-        suggest_btn.setToolTip("Use CLIP to find the closest label from the selected category")
+        suggest_btn.setToolTip(
+            "Auto: scores every category and combines the top confident matches\n"
+            "Single category: picks the best label using a domain-specific prompt")
         suggest_btn.clicked.connect(self._run_auto_name)
         cat_row.addWidget(suggest_btn)
         auto_layout.addLayout(cat_row)
@@ -2039,16 +2055,19 @@ class BatchRenameDialog(QDialog):
         self._custom_frame.setVisible(is_new_custom)
 
     def _get_current_labels(self):
-        """Return the list of labels for the currently selected category."""
-        idx = self._cat_combo.currentIndex()
+        """Return (category_name, labels) for the currently selected category.
+
+        Returns ("", []) for the Auto mode and ("", []) for the custom editor row.
+        """
         text = self._cat_combo.currentText()
-        built_in_names = list(RENAME_CATEGORIES.keys())
-        if idx < len(built_in_names):
-            return RENAME_CATEGORIES[built_in_names[idx]]
+        if text == "Auto (All Categories)":
+            return "", []
+        if text in RENAME_CATEGORIES:
+            return text, RENAME_CATEGORIES[text]
         if text.startswith("[Custom] "):
             cname = text[len("[Custom] "):]
-            return self._custom_cats.get(cname, [])
-        return []
+            return cname, self._custom_cats.get(cname, [])
+        return "", []
 
     def _save_custom_category(self):
         cname = self._custom_name_edit.text().strip()
@@ -2080,13 +2099,17 @@ class BatchRenameDialog(QDialog):
     def _run_auto_name(self):
         if self._app is None or self._app.clip_model is None:
             return
-        labels = self._get_current_labels()
-        if not labels:
-            QMessageBox.information(self, "No Labels",
-                "The selected category has no labels. "
-                "For a custom category, enter and save labels first.")
-            return
-        best = self._app._auto_name_group(self._file_paths, labels)
+        if self._cat_combo.currentText() == "Auto (All Categories)":
+            best = self._app._auto_name_composite(self._file_paths)
+        else:
+            cat_name, labels = self._get_current_labels()
+            if not labels:
+                QMessageBox.information(self, "No Labels",
+                    "The selected category has no labels. "
+                    "For a custom category, enter and save labels first.")
+                return
+            best = self._app._auto_name_group(self._file_paths, labels,
+                                               category_name=cat_name)
         if best:
             self._name_edit.setText(best)
 
@@ -6030,39 +6053,46 @@ class ImageSearchApp(QMainWindow):
 
         return pairs, errors
 
-    def _auto_name_group(self, file_paths, labels):
+    def _get_group_embedding(self, file_paths):
+        """Return the normalised mean embedding for a list of file paths.
+
+        Looks up each path in the current index and averages their embeddings.
+        Returns None if none of the paths are indexed.
+        """
+        path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
+        idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
+        if not idxs:
+            safe_print("[RENAME] Auto-name: none of the group paths found in index")
+            return None
+        emb = self.image_embeddings[idxs].mean(axis=0)
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb = emb / norm
+        return emb, idxs
+
+    def _auto_name_group(self, file_paths, labels, category_name=""):
         """Use CLIP text embeddings to find the closest label to a group of images.
 
-        Computes the average image embedding for *file_paths* (using the
-        already-indexed embeddings), then returns the label whose text embedding
-        is nearest (cosine similarity).
+        Uses a category-specific prompt template (e.g. "a person wearing X"
+        for Clothing) for much better alignment than the generic "a photo of X".
 
-        Returns the best-matching label string, or "" if no embeddings available.
+        Returns the best-matching label string, or "" if unavailable.
         """
         if self.clip_model is None or self.image_embeddings is None:
             return ""
         if not labels:
             return ""
 
-        # Build path→index lookup
-        path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
-        idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
-        if not idxs:
-            safe_print("[RENAME] Auto-name: none of the group paths found in index")
+        result = self._get_group_embedding(file_paths)
+        if result is None:
             return ""
+        group_emb, idxs = result
 
-        group_emb = self.image_embeddings[idxs].mean(axis=0)
-        norm = np.linalg.norm(group_emb)
-        if norm > 0:
-            group_emb = group_emb / norm
-
-        # Wrap each label in the standard CLIP zero-shot prompt template.
-        # CLIP was trained on caption-style text; bare words like "Beach" align
-        # far more poorly with image embeddings than "a photo of a beach".
-        prompted = [f"a photo of {lbl.lower()}" for lbl in labels]
+        template = CATEGORY_PROMPTS.get(category_name, _DEFAULT_PROMPT)
+        prompted = [template(lbl) for lbl in labels]
 
         try:
-            text_embs = self.clip_model.encode_text(prompted)  # (N, D)
+            text_embs = self.clip_model.encode_text(prompted)
         except Exception as e:
             safe_print(f"[RENAME] Text encode failed: {e}")
             return ""
@@ -6070,12 +6100,68 @@ class ImageSearchApp(QMainWindow):
         sims = text_embs @ group_emb
         best_idx = int(np.argmax(sims))
         safe_print(
-            f"[RENAME] Auto-name: best='{labels[best_idx]}' "
-            f"(score {sims[best_idx]:.3f}), "
-            f"worst='{labels[int(np.argmin(sims))]}' ({sims.min():.3f}), "
-            f"group size={len(idxs)}"
+            f"[RENAME] '{category_name}' → '{labels[best_idx]}' "
+            f"(score {sims[best_idx]:.3f}, margin over mean "
+            f"{sims[best_idx] - float(sims.mean()):.3f}), group size={len(idxs)}"
         )
         return labels[best_idx]
+
+    def _auto_name_composite(self, file_paths):
+        """Score every built-in (and custom) category and combine the confident
+        winners into a descriptive multi-word name.
+
+        For each category the 'margin' (top score − category mean) is used to
+        decide whether there is a clear visual match.  The top 3 categories by
+        margin are combined, in order of confidence.
+
+        Returns a space-joined string such as "Beach Midday Swimwear", or just
+        the single best label if only one category is confident.
+        """
+        if self.clip_model is None or self.image_embeddings is None:
+            return ""
+
+        result = self._get_group_embedding(file_paths)
+        if result is None:
+            return ""
+        group_emb, _idxs = result
+
+        # Merge built-in and custom categories
+        all_cats = dict(RENAME_CATEGORIES)
+        saved = _load_app_settings().get("rename_custom_categories", {})
+        all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
+
+        scored = []   # (margin, category_name, best_label, best_score)
+        for cat_name, labels in all_cats.items():
+            if not labels:
+                continue
+            template = CATEGORY_PROMPTS.get(cat_name, _DEFAULT_PROMPT)
+            prompted = [template(lbl) for lbl in labels]
+            try:
+                text_embs = self.clip_model.encode_text(prompted)
+            except Exception:
+                continue
+            sims = text_embs @ group_emb
+            best_idx = int(np.argmax(sims))
+            best_score = float(sims[best_idx])
+            margin = best_score - float(sims.mean())
+            scored.append((margin, cat_name, labels[best_idx], best_score))
+
+        if not scored:
+            return ""
+
+        scored.sort(reverse=True)
+        safe_print("[RENAME] Composite scores: " +
+                   ", ".join(f"{cat}={lbl}(score={sc:.3f} margin={mg:.3f})"
+                             for mg, cat, lbl, sc in scored))
+
+        # Include categories where the top label clearly beats the field.
+        # A margin of ≥ 0.02 means the winner is noticeably more relevant.
+        MARGIN_THRESHOLD = 0.02
+        parts = [lbl for mg, _cat, lbl, _sc in scored[:3] if mg >= MARGIN_THRESHOLD]
+        if not parts:
+            parts = [scored[0][2]]  # always return at least one word
+
+        return " ".join(parts)
 
     def rename_selected(self):
         """Batch-rename the currently selected images from the main search view."""
