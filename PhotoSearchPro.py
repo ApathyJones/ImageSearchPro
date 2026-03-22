@@ -6048,6 +6048,7 @@ class ImageSearchApp(QMainWindow):
         path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
         idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
         if not idxs:
+            safe_print("[RENAME] Auto-name: none of the group paths found in index")
             return ""
 
         group_emb = self.image_embeddings[idxs].mean(axis=0)
@@ -6055,14 +6056,25 @@ class ImageSearchApp(QMainWindow):
         if norm > 0:
             group_emb = group_emb / norm
 
+        # Wrap each label in the standard CLIP zero-shot prompt template.
+        # CLIP was trained on caption-style text; bare words like "Beach" align
+        # far more poorly with image embeddings than "a photo of a beach".
+        prompted = [f"a photo of {lbl.lower()}" for lbl in labels]
+
         try:
-            text_embs = self.clip_model.encode_text(labels)  # (N, D)
+            text_embs = self.clip_model.encode_text(prompted)  # (N, D)
         except Exception as e:
             safe_print(f"[RENAME] Text encode failed: {e}")
             return ""
 
         sims = text_embs @ group_emb
         best_idx = int(np.argmax(sims))
+        safe_print(
+            f"[RENAME] Auto-name: best='{labels[best_idx]}' "
+            f"(score {sims[best_idx]:.3f}), "
+            f"worst='{labels[int(np.argmin(sims))]}' ({sims.min():.3f}), "
+            f"group size={len(idxs)}"
+        )
         return labels[best_idx]
 
     def rename_selected(self):
