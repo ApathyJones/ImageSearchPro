@@ -327,17 +327,6 @@ MODEL_REGISTRY = {
         "input_size":      224,
         "specialist_only": True,
     },
-    "bioclip": {
-        "label":           "BioCLIP ViT-B/16",
-        "subtitle":        "TreeOfLife-10M fine-tuned  •  Specialist for Animal/Nature categories",
-        "type":            "openclip",
-        "model_name":      "hf-hub:imageomics/bioclip",
-        "pretrained":      "",
-        "has_text":        True,
-        "cache_key":       "BioCLIP-ViT-B16",
-        "input_size":      224,
-        "specialist_only": True,
-    },
     "streetclip": {
         "label":           "StreetCLIP ViT-L/14",
         "subtitle":        "Geo/street fine-tuned  •  Specialist for Location category",
