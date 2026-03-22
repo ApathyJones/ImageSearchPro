@@ -6967,38 +6967,139 @@ class ImageSearchApp(QMainWindow):
         thresh_str = f"  (threshold: {threshold:.3f})" if threshold is not None else ""
         dlg.setWindowTitle(
             f"Duplicate Finder — {len(group_data)} groups, {total_redundant} redundant files{thresh_str}")
-        dlg.resize(960, 680)
+        dlg.resize(1020, 720)
+
+        # ── Per-button style helpers ──────────────────────────────────────────
+        _btn_base = (
+            "QPushButton {{"
+            "  background-color: {bg}; color: {fg}; border: 1px solid {bd};"
+            "  border-radius: 5px; padding: 4px 11px; font-size: 8pt;"
+            "}}"
+            "QPushButton:hover {{ background-color: {hv}; border-color: {BORDER_ACTIVE}; }}"
+            "QPushButton:pressed {{ background-color: {pr}; }}"
+        )
+        def _style_btn(btn, kind="secondary"):
+            if kind == "accent":
+                btn.setStyleSheet(_btn_base.format(
+                    bg=ACCENT_SECONDARY, fg="#ffffff", bd=ACCENT_SECONDARY,
+                    hv="#5aabff", pr="#1f5fbb",
+                    BORDER_ACTIVE=BORDER_ACTIVE))
+            elif kind == "danger":
+                btn.setStyleSheet(_btn_base.format(
+                    bg=DANGER, fg="#ffffff", bd=DANGER,
+                    hv="#ff6b63", pr="#a82820",
+                    BORDER_ACTIVE=BORDER_ACTIVE))
+            elif kind == "muted":
+                btn.setStyleSheet(_btn_base.format(
+                    bg=PANEL_BG, fg=FG_MUTED, bd=BORDER,
+                    hv=CARD_HOVER, pr=BORDER,
+                    BORDER_ACTIVE=BORDER_ACTIVE))
+            else:  # secondary
+                btn.setStyleSheet(_btn_base.format(
+                    bg=CARD_BG, fg=FG, bd=BORDER,
+                    hv=CARD_HOVER, pr=PANEL_BG,
+                    BORDER_ACTIVE=BORDER_ACTIVE))
+
+        # ── Full dialog dark stylesheet ───────────────────────────────────────
+        dlg.setStyleSheet(f"""
+            QDialog {{ background-color: {BG}; color: {FG}; }}
+            QLabel {{ color: {FG}; background: transparent; border: none; }}
+            QScrollArea {{ background-color: {BG}; border: none; }}
+            QWidget#inner_widget {{ background-color: {BG}; }}
+            QScrollBar:vertical {{
+                background: {PANEL_BG}; width: 8px;
+                border-radius: 4px; border: none; margin: 4px 4px 4px 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: {BORDER}; border-radius: 4px; min-height: 24px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: {FG_MUTED}; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar:horizontal {{ height: 0; }}
+            QComboBox {{
+                background-color: {CARD_BG}; color: {FG};
+                border: 1px solid {BORDER}; border-radius: 5px; padding: 4px 8px;
+            }}
+            QComboBox:hover {{ border-color: {BORDER_ACTIVE}; }}
+            QComboBox QAbstractItemView {{
+                background-color: {CARD_BG}; color: {FG};
+                selection-background-color: {ACCENT_SECONDARY};
+            }}
+            QCheckBox {{ color: {FG}; spacing: 6px; }}
+            QCheckBox::indicator {{
+                width: 15px; height: 15px;
+                border: 1px solid {BORDER}; border-radius: 3px;
+                background: {PANEL_BG};
+            }}
+            QCheckBox::indicator:hover {{ border-color: {BORDER_ACTIVE}; }}
+            QCheckBox::indicator:checked {{
+                background-color: {ACCENT_SECONDARY};
+                border-color: {ACCENT_SECONDARY};
+                image: none;
+            }}
+        """)
+
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # Header
+        # ── Header panel ──────────────────────────────────────────────────────
+        hdr_panel = QFrame()
+        hdr_panel.setStyleSheet(
+            f"QFrame {{ background-color: {PANEL_BG}; border-bottom: 1px solid {BORDER}; }}"
+            f"QLabel {{ color: {FG}; background: transparent; border: none; }}")
+        hdr_panel_layout = QVBoxLayout(hdr_panel)
+        hdr_panel_layout.setContentsMargins(16, 12, 16, 12)
+        hdr_panel_layout.setSpacing(4)
+
         hdr_lbl = QLabel(
-            f"{len(group_data)} duplicate groups   —   {total_redundant} potentially redundant files{thresh_str}")
-        hdr_lbl.setStyleSheet("font-size: 10pt; font-weight: bold;")
-        layout.addWidget(hdr_lbl)
-        layout.addWidget(QLabel(
-            "Tick images you want to act on. 'Keep First, Check Rest' is a quick shortcut per group."))
+            f"<b>{len(group_data)} duplicate groups</b>"
+            f"  —  {total_redundant} potentially redundant files"
+            f"<span style='color:{FG_MUTED};'>{thresh_str}</span>")
+        hdr_lbl.setStyleSheet(f"font-size: 11pt; color: {FG};")
+        hdr_panel_layout.addWidget(hdr_lbl)
 
-        # Scrollable area
+        sub_lbl = QLabel(
+            "Tick the images you want to act on.  "
+            "<b>Keep First, Check Rest</b> auto-selects duplicates in a group.")
+        sub_lbl.setStyleSheet(f"font-size: 8pt; color: {FG_MUTED};")
+        hdr_panel_layout.addWidget(sub_lbl)
+        layout.addWidget(hdr_panel)
+
+        # ── Scrollable group area ─────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner_widget = QWidget()
+        inner_widget.setObjectName("inner_widget")
         inner_layout = QVBoxLayout(inner_widget)
+        inner_layout.setContentsMargins(12, 12, 20, 12)   # right=20 keeps content off scrollbar
+        inner_layout.setSpacing(10)
         scroll.setWidget(inner_widget)
         layout.addWidget(scroll, stretch=1)
 
-        # path → (QCheckBox, group_index) so we can look up group later
-        action_vars = {}   # abs_path -> QCheckBox
-        path_to_group = {}  # abs_path -> grp_idx
+        # path → QCheckBox; path → group index
+        action_vars  = {}
+        path_to_group = {}
 
         for grp_idx, group in enumerate(group_data):
+            # ── Group card ────────────────────────────────────────────────────
             grp_frame = QFrame()
-            grp_frame.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+            grp_frame.setStyleSheet(
+                f"QFrame#grp_card {{"
+                f"  background-color: {CARD_BG}; border: 1px solid {BORDER};"
+                f"  border-radius: 8px;"
+                f"}}"
+                f"QLabel {{ background: transparent; border: none; color: {FG}; }}"
+                f"QCheckBox {{ background: transparent; border: none; }}")
+            grp_frame.setObjectName("grp_card")
             grp_layout = QVBoxLayout(grp_frame)
+            grp_layout.setContentsMargins(10, 8, 10, 10)
+            grp_layout.setSpacing(8)
 
+            # ── Group header row ──────────────────────────────────────────────
             grp_hdr = QHBoxLayout()
-            grp_hdr_lbl = QLabel(f"Group {grp_idx + 1}  —  {len(group)} similar images")
-            grp_hdr_lbl.setStyleSheet("font-weight: bold;")
-            grp_hdr.addWidget(grp_hdr_lbl)
+            grp_hdr.setSpacing(6)
 
             def _check_rest(g=group):
                 for k, (ap, _rp, _img) in enumerate(g):
@@ -7010,33 +7111,64 @@ class ImageSearchApp(QMainWindow):
                     if ap in action_vars:
                         action_vars[ap].setChecked(True)
 
+            # Buttons on LEFT
             all_btn = QPushButton("Select All in Group")
-            all_btn.clicked.connect(lambda _checked=False, g=group: _check_all_in_group(g))
+            all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            all_btn.clicked.connect(lambda _=False, g=group: _check_all_in_group(g))
+            _style_btn(all_btn, "secondary")
             grp_hdr.addWidget(all_btn)
 
-            grp_hdr.addStretch()
+            keep_btn = QPushButton("Keep First, Check Rest")
+            keep_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            keep_btn.clicked.connect(lambda _=False, g=group: _check_rest(g))
+            _style_btn(keep_btn, "secondary")
+            grp_hdr.addWidget(keep_btn)
 
-            def _rename_group(g=group):
+            def _rename_group(g=group, gi=grp_idx):
                 paths = [ap for ap, _rp, _img in g]
-                rename_dlg = BatchRenameDialog(dlg, paths, suggested=f"Group_{grp_idx+1}", app=self)
+                rename_dlg = BatchRenameDialog(dlg, paths, suggested=f"Group_{gi+1}", app=self)
                 rename_dlg.exec()
 
             rename_grp_btn = QPushButton("Rename Group…")
-            rename_grp_btn.clicked.connect(lambda _checked=False, g=group: _rename_group(g))
+            rename_grp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            rename_grp_btn.clicked.connect(lambda _=False, g=group, gi=grp_idx: _rename_group(g, gi))
+            _style_btn(rename_grp_btn, "muted")
             grp_hdr.addWidget(rename_grp_btn)
 
-            keep_btn = QPushButton("Keep First, Check Rest")
-            keep_btn.clicked.connect(lambda _checked=False, g=group: _check_rest(g))
-            grp_hdr.addWidget(keep_btn)
+            grp_hdr.addStretch()
+
+            # Group label on the RIGHT (count + index)
+            grp_hdr_lbl = QLabel(
+                f"<span style='color:{FG_MUTED};'>Group {grp_idx + 1}</span>"
+                f"  <b>{len(group)}</b>"
+                f"<span style='color:{FG_MUTED};'> similar images</span>")
+            grp_hdr_lbl.setStyleSheet(f"font-size: 9pt; color: {FG};")
+            grp_hdr.addWidget(grp_hdr_lbl)
+
             grp_layout.addLayout(grp_hdr)
 
+            # ── Thumbnail row ─────────────────────────────────────────────────
             thumbs_row_widget = QWidget()
+            thumbs_row_widget.setStyleSheet("background: transparent;")
             thumbs_row_layout = QHBoxLayout(thumbs_row_widget)
+            thumbs_row_layout.setContentsMargins(0, 0, 0, 0)
+            thumbs_row_layout.setSpacing(6)
             thumbs_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
             for k, (abs_path, rel_path, pil_img) in enumerate(group):
-                cell = QWidget()
+                # Mini image card
+                cell = QFrame()
+                cell.setObjectName("img_card")
+                cell.setStyleSheet(
+                    f"QFrame#img_card {{"
+                    f"  background-color: {PANEL_BG}; border: 1px solid {BORDER};"
+                    f"  border-radius: 6px;"
+                    f"}}"
+                    f"QLabel {{ background: transparent; border: none; }}"
+                    f"QCheckBox {{ background: transparent; border: none; }}")
                 cell_layout = QVBoxLayout(cell)
+                cell_layout.setContentsMargins(6, 6, 6, 6)
+                cell_layout.setSpacing(3)
                 cell_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
                 if pil_img is not None:
@@ -7049,6 +7181,8 @@ class ImageSearchApp(QMainWindow):
                 else:
                     no_prev = QLabel("[no preview]")
                     no_prev.setFixedSize(150, 100)
+                    no_prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                    no_prev.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
                     cell_layout.addWidget(no_prev)
 
                 name = os.path.basename(rel_path)
@@ -7056,7 +7190,7 @@ class ImageSearchApp(QMainWindow):
                     name = name[:19] + "..."
                 name_lbl = QLabel(name)
                 name_lbl.setWordWrap(True)
-                name_lbl.setStyleSheet("font-size: 8pt;")
+                name_lbl.setStyleSheet(f"font-size: 8pt; color: {FG};")
                 cell_layout.addWidget(name_lbl)
 
                 try:
@@ -7064,7 +7198,7 @@ class ImageSearchApp(QMainWindow):
                     size_str = (f"{fsize/1024:.0f} KB" if fsize < 1024*1024
                                 else f"{fsize/1024/1024:.1f} MB")
                     size_lbl = QLabel(size_str)
-                    size_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
+                    size_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
                     cell_layout.addWidget(size_lbl)
                 except Exception:
                     pass
@@ -7083,8 +7217,17 @@ class ImageSearchApp(QMainWindow):
         inner_layout.addStretch()
 
         # ── Bottom action bar ─────────────────────────────────────────────────
+        bottom_panel = QFrame()
+        bottom_panel.setStyleSheet(
+            f"QFrame {{ background-color: {PANEL_BG}; border-top: 1px solid {BORDER}; }}"
+            f"QLabel {{ color: {FG_MUTED}; background: transparent; border: none; font-size: 8pt; }}")
+        bottom_layout = QVBoxLayout(bottom_panel)
+        bottom_layout.setContentsMargins(12, 8, 12, 10)
+        bottom_layout.setSpacing(6)
+
         count_label = QLabel("")
-        layout.addWidget(count_label)
+        count_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        bottom_layout.addWidget(count_label)
 
         def _update_count():
             n = sum(1 for cb in action_vars.values() if cb.isChecked())
@@ -7092,7 +7235,12 @@ class ImageSearchApp(QMainWindow):
             count_label.setText(f"{n} file(s) checked  —  action: {action}")
 
         action_row = QHBoxLayout()
-        action_row.addWidget(QLabel("Action:"))
+        action_row.setSpacing(8)
+
+        action_lbl = QLabel("Action:")
+        action_lbl.setStyleSheet(f"color: {FG}; font-size: 9pt;")
+        action_row.addWidget(action_lbl)
+
         action_combo = QComboBox()
         action_combo.addItems([
             "Delete (Recycle Bin)",
@@ -7100,13 +7248,15 @@ class ImageSearchApp(QMainWindow):
             "Move into Group Subfolders…",
             "Rename Checked Files…",
         ])
-        action_combo.setMinimumWidth(240)
+        action_combo.setMinimumWidth(220)
         action_combo.currentIndexChanged.connect(lambda _: _update_count())
         action_row.addWidget(action_combo)
 
         apply_btn = QPushButton("Apply to Checked")
-        apply_btn.setProperty("class", "accent")
+        apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        _style_btn(apply_btn, "accent")
         action_row.addWidget(apply_btn)
+
         action_row.addStretch()
 
         def _select_all():
@@ -7118,17 +7268,25 @@ class ImageSearchApp(QMainWindow):
                 cb.setChecked(False)
 
         sel_all_btn = QPushButton("Select All")
+        sel_all_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         sel_all_btn.clicked.connect(_select_all)
+        _style_btn(sel_all_btn, "secondary")
         action_row.addWidget(sel_all_btn)
 
         sel_none_btn = QPushButton("Select None")
+        sel_none_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         sel_none_btn.clicked.connect(_select_none)
+        _style_btn(sel_none_btn, "secondary")
         action_row.addWidget(sel_none_btn)
 
         close_btn = QPushButton("Close")
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         close_btn.clicked.connect(dlg.accept)
+        _style_btn(close_btn, "muted")
         action_row.addWidget(close_btn)
-        layout.addLayout(action_row)
+
+        bottom_layout.addLayout(action_row)
+        layout.addWidget(bottom_panel)
 
         for cb in action_vars.values():
             cb.stateChanged.connect(lambda _: _update_count())
