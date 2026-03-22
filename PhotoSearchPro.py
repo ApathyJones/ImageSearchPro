@@ -399,10 +399,13 @@ NUDENET_LABEL_GROUPS = {
 
 # ── Built-in rename category sets (used for CLIP auto-naming) ─────────────────
 RENAME_CATEGORIES = {
+    # Clothing: colour-free garment types — colour is detected separately
     "Clothing": [
-        "Red Shirt", "Blue Shirt", "Green Shirt", "White Shirt", "Black Shirt",
-        "T-Shirt", "Blouse", "Dress", "Skirt", "Jeans", "Pants", "Shorts",
-        "Jacket", "Coat", "Hoodie", "Suit", "Swimwear", "Uniform",
+        "T-Shirt", "Shirt", "Blouse", "Tank Top", "Crop Top", "Sports Bra",
+        "Dress", "Skirt", "Jeans", "Trousers", "Shorts", "Leggings",
+        "Jacket", "Coat", "Hoodie", "Cardigan", "Vest", "Suit",
+        "Bikini", "One-Piece Swimsuit", "Swimwear",
+        "Uniform", "Pyjamas",
     ],
     "Location": [
         "Beach", "Mountain", "Forest", "City Street", "Park", "Desert",
@@ -423,6 +426,24 @@ RENAME_CATEGORIES = {
         "Work", "Art", "Technology", "Vehicle", "Aerial View",
     ],
 }
+
+# Colours used for the Clothing two-pass colour detection.
+CLOTHING_COLORS = [
+    "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Pink",
+    "White", "Black", "Grey", "Brown", "Beige", "Navy", "Teal", "Maroon",
+]
+
+# Per-category CLIP prompt templates.
+# Domain-specific phrasing aligns text embeddings much more precisely with
+# image embeddings than the generic "a photo of X" template.
+CATEGORY_PROMPTS = {
+    "Clothing":      lambda lbl: f"a person wearing {lbl.lower()}",
+    "Location":      lambda lbl: f"a photo taken at {lbl.lower()}",
+    "Time of Day":   lambda lbl: f"a photo taken during {lbl.lower()}",
+    "Weather":       lambda lbl: f"a {lbl.lower()} day outdoors",
+    "General Scene": lambda lbl: f"a photo of {lbl.lower()}",
+}
+_DEFAULT_PROMPT = lambda lbl: f"a photo of {lbl.lower()}"  # noqa: E731
 
 # Serializes disk reads so HDD head moves sequentially instead of thrashing.
 _DISK_LOCK = threading.Lock()
@@ -1894,6 +1915,8 @@ class BatchRenameDialog(QDialog):
         cat_row.addWidget(QLabel("Auto-name category:"))
 
         self._cat_combo = QComboBox()
+        # "Auto" mode is first so it is the default
+        self._cat_combo.addItem("Auto (All Categories)")
         built_in_names = list(RENAME_CATEGORIES.keys())
         self._cat_combo.addItems(built_in_names)
         # Load saved custom categories from settings
@@ -1908,7 +1931,9 @@ class BatchRenameDialog(QDialog):
         cat_row.addWidget(self._cat_combo, stretch=1)
 
         suggest_btn = QPushButton("Suggest Name")
-        suggest_btn.setToolTip("Use CLIP to find the closest label from the selected category")
+        suggest_btn.setToolTip(
+            "Auto: scores every category and combines the top confident matches\n"
+            "Single category: picks the best label using a domain-specific prompt")
         suggest_btn.clicked.connect(self._run_auto_name)
         cat_row.addWidget(suggest_btn)
         auto_layout.addLayout(cat_row)
@@ -2039,16 +2064,19 @@ class BatchRenameDialog(QDialog):
         self._custom_frame.setVisible(is_new_custom)
 
     def _get_current_labels(self):
-        """Return the list of labels for the currently selected category."""
-        idx = self._cat_combo.currentIndex()
+        """Return (category_name, labels) for the currently selected category.
+
+        Returns ("", []) for the Auto mode and ("", []) for the custom editor row.
+        """
         text = self._cat_combo.currentText()
-        built_in_names = list(RENAME_CATEGORIES.keys())
-        if idx < len(built_in_names):
-            return RENAME_CATEGORIES[built_in_names[idx]]
+        if text == "Auto (All Categories)":
+            return "", []
+        if text in RENAME_CATEGORIES:
+            return text, RENAME_CATEGORIES[text]
         if text.startswith("[Custom] "):
             cname = text[len("[Custom] "):]
-            return self._custom_cats.get(cname, [])
-        return []
+            return cname, self._custom_cats.get(cname, [])
+        return "", []
 
     def _save_custom_category(self):
         cname = self._custom_name_edit.text().strip()
@@ -2080,13 +2108,17 @@ class BatchRenameDialog(QDialog):
     def _run_auto_name(self):
         if self._app is None or self._app.clip_model is None:
             return
-        labels = self._get_current_labels()
-        if not labels:
-            QMessageBox.information(self, "No Labels",
-                "The selected category has no labels. "
-                "For a custom category, enter and save labels first.")
-            return
-        best = self._app._auto_name_group(self._file_paths, labels)
+        if self._cat_combo.currentText() == "Auto (All Categories)":
+            best = self._app._auto_name_composite(self._file_paths)
+        else:
+            cat_name, labels = self._get_current_labels()
+            if not labels:
+                QMessageBox.information(self, "No Labels",
+                    "The selected category has no labels. "
+                    "For a custom category, enter and save labels first.")
+                return
+            best = self._app._auto_name_group(self._file_paths, labels,
+                                               category_name=cat_name)
         if best:
             self._name_edit.setText(best)
 
@@ -6030,52 +6062,130 @@ class ImageSearchApp(QMainWindow):
 
         return pairs, errors
 
-    def _auto_name_group(self, file_paths, labels):
-        """Use CLIP text embeddings to find the closest label to a group of images.
+    def _get_group_embedding(self, file_paths):
+        """Return the normalised mean embedding for a list of file paths.
 
-        Computes the average image embedding for *file_paths* (using the
-        already-indexed embeddings), then returns the label whose text embedding
-        is nearest (cosine similarity).
+        Returns (emb, idxs) or None if no paths are indexed.
+        """
+        path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
+        idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
+        if not idxs:
+            safe_print("[RENAME] Auto-name: none of the group paths found in index")
+            return None
+        emb = self.image_embeddings[idxs].mean(axis=0)
+        norm = np.linalg.norm(emb)
+        if norm > 0:
+            emb = emb / norm
+        return emb, idxs
 
-        Returns the best-matching label string, or "" if no embeddings available.
+    def _score_single_category(self, group_emb, cat_name, labels):
+        """Score all labels in one category against *group_emb*.
+
+        For the Clothing category a second CLIP pass detects the dominant colour
+        and prepends it to the garment type, e.g. "Bikini" → "Purple Bikini".
+
+        Returns (best_label, margin) where margin = top_score − category_mean.
+        Returns ("", 0.0) on any error.
+        """
+        template = CATEGORY_PROMPTS.get(cat_name, _DEFAULT_PROMPT)
+        prompted = [template(lbl) for lbl in labels]
+        try:
+            text_embs = self.clip_model.encode_text(prompted)
+        except Exception as e:
+            safe_print(f"[RENAME] encode_text failed for '{cat_name}': {e}")
+            return "", 0.0
+
+        sims = text_embs @ group_emb
+        best_idx = int(np.argmax(sims))
+        best_score = float(sims[best_idx])
+        margin = best_score - float(sims.mean())
+        best_label = labels[best_idx]
+
+        # ── Clothing: two-pass colour detection ──────────────────────────────
+        # Re-score each colour using the specific garment type already found so
+        # CLIP considers both together: "a person wearing purple bikini" rather
+        # than the generic "a person wearing purple coloured clothing".
+        if cat_name == "Clothing":
+            color_prompts = [
+                f"a person wearing {c.lower()} {best_label.lower()}"
+                for c in CLOTHING_COLORS
+            ]
+            try:
+                color_embs = self.clip_model.encode_text(color_prompts)
+                color_sims = color_embs @ group_emb
+                best_color = CLOTHING_COLORS[int(np.argmax(color_sims))]
+                safe_print(
+                    f"[RENAME] Clothing colour pass → '{best_color}' "
+                    f"(score {float(color_sims.max()):.3f})"
+                )
+                best_label = f"{best_color} {best_label}"
+            except Exception as e:
+                safe_print(f"[RENAME] Colour pass failed: {e}")
+
+        safe_print(
+            f"[RENAME] '{cat_name}' → '{best_label}' "
+            f"(score {best_score:.3f}, margin {margin:.3f})"
+        )
+        return best_label, margin
+
+    def _auto_name_group(self, file_paths, labels, category_name=""):
+        """Find the best label for *file_paths* within a single category.
+
+        Returns the best-matching label string (with colour prefix for Clothing),
+        or "" if unavailable.
         """
         if self.clip_model is None or self.image_embeddings is None:
             return ""
         if not labels:
             return ""
 
-        # Build path→index lookup
-        path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
-        idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
-        if not idxs:
-            safe_print("[RENAME] Auto-name: none of the group paths found in index")
+        result = self._get_group_embedding(file_paths)
+        if result is None:
+            return ""
+        group_emb, _idxs = result
+
+        best_label, _margin = self._score_single_category(group_emb, category_name, labels)
+        return best_label
+
+    def _auto_name_composite(self, file_paths):
+        """Score every built-in (and custom) category and combine the confident
+        winners into a descriptive multi-word name such as "Beach Midday Purple Bikini".
+
+        Uses the margin (top score − category mean) to filter out categories
+        where no label clearly stands out.  The top 3 confident categories are
+        combined in confidence order.
+        """
+        if self.clip_model is None or self.image_embeddings is None:
             return ""
 
-        group_emb = self.image_embeddings[idxs].mean(axis=0)
-        norm = np.linalg.norm(group_emb)
-        if norm > 0:
-            group_emb = group_emb / norm
+        result = self._get_group_embedding(file_paths)
+        if result is None:
+            return ""
+        group_emb, _idxs = result
 
-        # Wrap each label in the standard CLIP zero-shot prompt template.
-        # CLIP was trained on caption-style text; bare words like "Beach" align
-        # far more poorly with image embeddings than "a photo of a beach".
-        prompted = [f"a photo of {lbl.lower()}" for lbl in labels]
+        all_cats = dict(RENAME_CATEGORIES)
+        saved = _load_app_settings().get("rename_custom_categories", {})
+        all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
 
-        try:
-            text_embs = self.clip_model.encode_text(prompted)  # (N, D)
-        except Exception as e:
-            safe_print(f"[RENAME] Text encode failed: {e}")
+        scored = []   # (margin, cat_name, best_label)
+        for cat_name, labels in all_cats.items():
+            if not labels:
+                continue
+            best_label, margin = self._score_single_category(group_emb, cat_name, labels)
+            if best_label:
+                scored.append((margin, cat_name, best_label))
+
+        if not scored:
             return ""
 
-        sims = text_embs @ group_emb
-        best_idx = int(np.argmax(sims))
-        safe_print(
-            f"[RENAME] Auto-name: best='{labels[best_idx]}' "
-            f"(score {sims[best_idx]:.3f}), "
-            f"worst='{labels[int(np.argmin(sims))]}' ({sims.min():.3f}), "
-            f"group size={len(idxs)}"
-        )
-        return labels[best_idx]
+        scored.sort(reverse=True)
+
+        MARGIN_THRESHOLD = 0.02
+        parts = [lbl for mg, _cat, lbl in scored[:3] if mg >= MARGIN_THRESHOLD]
+        if not parts:
+            parts = [scored[0][2]]
+
+        return " ".join(parts)
 
     def rename_selected(self):
         """Batch-rename the currently selected images from the main search view."""
