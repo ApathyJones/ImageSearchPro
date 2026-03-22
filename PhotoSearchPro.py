@@ -48,7 +48,7 @@ from PyQt6.QtGui import (
     QPalette, QColor)
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal,
-    QFileSystemWatcher)
+    QFileSystemWatcher, QObject)
 
 # Prevent PIL from crashing on legitimately large images (scanned maps, panoramas, etc.)
 # Files that truly cannot be decoded still get caught by the try/except in open_image()
