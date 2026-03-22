@@ -319,9 +319,8 @@ MODEL_REGISTRY = {
     "fashion-clip": {
         "label":           "FashionCLIP ViT-B/32",
         "subtitle":        "~700K fashion images  •  Specialist for Clothing category",
-        "type":            "openclip",
-        "model_name":      "hf-hub:patrickjohncyh/fashion-clip",
-        "pretrained":      "",
+        "type":            "hf-clip",
+        "model_name":      "patrickjohncyh/fashion-clip",
         "has_text":        True,
         "cache_key":       "FashionCLIP-ViT-B32",
         "input_size":      224,
@@ -1584,6 +1583,80 @@ class DinoBackendModel:
         )
 
 
+class HFCLIPModel:
+    """Backend for HuggingFace Transformers-format CLIP models (e.g. FashionCLIP).
+
+    These models are saved with CLIPModel/CLIPProcessor from the `transformers`
+    library and cannot be loaded by open_clip directly.
+    """
+
+    def __init__(self, model_cfg):
+        import torch
+        from transformers import CLIPModel, CLIPProcessor
+
+        self.model_cfg = model_cfg
+        self.has_text = model_cfg["has_text"]
+        model_id = model_cfg["model_name"]   # plain HF repo id, no "hf-hub:" prefix
+
+        self.device, _name, self.amp_dtype = _detect_device()
+        safe_print(f"[MODEL] Loading: {model_id}")
+
+        # Try offline cache first, fall back to download
+        try:
+            import huggingface_hub
+            huggingface_hub.constants.HF_HUB_OFFLINE = True
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            os.environ["TRANSFORMERS_OFFLINE"] = "1"
+            self.model = CLIPModel.from_pretrained(model_id, cache_dir=_HF_CACHE)
+            self.processor = CLIPProcessor.from_pretrained(model_id, cache_dir=_HF_CACHE)
+            safe_print("[MODEL] Loaded from local cache")
+        except Exception:
+            safe_print("[MODEL] Cache not available, connecting to download...")
+            try:
+                import huggingface_hub
+                huggingface_hub.constants.HF_HUB_OFFLINE = False
+                os.environ["HF_HUB_OFFLINE"] = "0"
+                os.environ["TRANSFORMERS_OFFLINE"] = "0"
+                safe_print(f"[MODEL] Downloading {model_id} (this may take a while)...")
+                self.model = CLIPModel.from_pretrained(model_id, cache_dir=_HF_CACHE)
+                self.processor = CLIPProcessor.from_pretrained(model_id, cache_dir=_HF_CACHE)
+            except Exception as e:
+                raise RuntimeError(f"Failed to load {model_id}: {e}") from e
+
+        self.model.eval().to(self.device)
+        safe_print("[MODEL] Ready!\n")
+
+    def encode_image_batch(self, images):
+        """Encode a list of PIL images; return float32 numpy (N, D) normalised."""
+        import torch
+        inputs = self.processor(images=images, return_tensors="pt", padding=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            if self.amp_dtype and torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    feats = self.model.get_image_features(**inputs)
+            else:
+                feats = self.model.get_image_features(**inputs)
+            feats = feats.float()
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats.cpu().numpy()
+
+    def encode_text(self, texts):
+        """Encode a list of strings; return float32 numpy (N, D) normalised."""
+        import torch
+        inputs = self.processor(text=texts, return_tensors="pt", padding=True, truncation=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        with torch.no_grad():
+            if self.amp_dtype and torch.cuda.is_available():
+                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
+                    feats = self.model.get_text_features(**inputs)
+            else:
+                feats = self.model.get_text_features(**inputs)
+            feats = feats.float()
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats.cpu().numpy()
+
+
 # ── Model factory ───────────────────────────────────────────────────────────────
 def create_model(model_key: str):
     """Instantiate and return the model backend for *model_key*."""
@@ -1597,6 +1670,8 @@ def create_model(model_key: str):
         return SigLIP2BackendModel(cfg)
     elif mtype == "dinotool":
         return DinoBackendModel(cfg)
+    elif mtype == "hf-clip":
+        return HFCLIPModel(cfg)
     else:
         raise ValueError(f"Unknown model type: {mtype!r}")
 
