@@ -329,9 +329,8 @@ MODEL_REGISTRY = {
     "streetclip": {
         "label":           "StreetCLIP ViT-L/14",
         "subtitle":        "Geo/street fine-tuned  •  Specialist for Location category",
-        "type":            "openclip",
-        "model_name":      "hf-hub:geolocal/StreetCLIP",
-        "pretrained":      "",
+        "type":            "hf-clip",
+        "model_name":      "geolocal/StreetCLIP",
         "has_text":        True,
         "cache_key":       "StreetCLIP-ViT-L14",
         "input_size":      224,
@@ -1626,19 +1625,49 @@ class HFCLIPModel:
         self.model.eval().to(self.device)
         safe_print("[MODEL] Ready!\n")
 
-    def encode_image_batch(self, images):
-        """Encode a list of PIL images; return float32 numpy (N, D) normalised."""
+    @staticmethod
+    def _pool(outputs, projection):
+        """Extract pooled embedding from a vision/text model output and project it.
+
+        Handles both tensor returns (newer transformers) and ModelOutput objects
+        (older versions or models with return_dict=True).  Uses pooler_output when
+        present (CLS-token projection), otherwise falls back to mean-pooling the
+        last hidden state.
+        """
+        if isinstance(outputs, tuple):
+            # return_dict=False: first element is last_hidden_state
+            hidden = outputs[0]
+            feats = hidden[:, 0, :]          # CLS token
+        elif hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
+            feats = outputs.pooler_output
+        else:
+            feats = outputs.last_hidden_state[:, 0, :]
+        return projection(feats)
+
+    def _run(self, fn, inputs):
+        """Run *fn* inside no_grad (+ optional autocast); return float tensor."""
         import torch
-        inputs = self.processor(images=images, return_tensors="pt", padding=True)
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         with torch.no_grad():
             if self.amp_dtype and torch.cuda.is_available():
                 with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
-                    feats = self.model.get_image_features(**inputs)
+                    out = fn(inputs)
             else:
-                feats = self.model.get_image_features(**inputs)
-            feats = feats.float()
-            feats = feats / feats.norm(dim=-1, keepdim=True)
+                out = fn(inputs)
+        return out
+
+    def encode_image_batch(self, images):
+        """Encode a list of PIL images; return float32 numpy (N, D) normalised."""
+        import torch
+        pixel_values = self.processor(images=images, return_tensors="pt").pixel_values
+        pixel_values = pixel_values.to(self.device)
+
+        def _encode(pv):
+            out = self.model.vision_model(pixel_values=pv)
+            return self._pool(out, self.model.visual_projection)
+
+        feats = self._run(_encode, pixel_values)
+        feats = feats.float()
+        feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().numpy()
 
     def encode_text(self, texts):
@@ -1646,14 +1675,14 @@ class HFCLIPModel:
         import torch
         inputs = self.processor(text=texts, return_tensors="pt", padding=True, truncation=True)
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
-        with torch.no_grad():
-            if self.amp_dtype and torch.cuda.is_available():
-                with torch.autocast(device_type="cuda", dtype=self.amp_dtype):
-                    feats = self.model.get_text_features(**inputs)
-            else:
-                feats = self.model.get_text_features(**inputs)
-            feats = feats.float()
-            feats = feats / feats.norm(dim=-1, keepdim=True)
+
+        def _encode(inp):
+            out = self.model.text_model(**inp)
+            return self._pool(out, self.model.text_projection)
+
+        feats = self._run(_encode, inputs)
+        feats = feats.float()
+        feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats.cpu().numpy()
 
 
