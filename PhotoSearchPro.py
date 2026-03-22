@@ -386,6 +386,130 @@ ORANGE           = "#e3b341"   # Amber — warnings
 BORDER           = "#30363d"   # Subtle border
 BORDER_ACTIVE    = "#58a6ff"   # Focus / hover border highlight
 
+# ── Shared dialog theming helpers ────────────────────────────────────────────
+
+def _dlg_stylesheet():
+    """Full dark-theme stylesheet to apply to every QDialog in the app."""
+    return f"""
+        QDialog, QWidget {{ background-color: {BG}; color: {FG}; }}
+        QLabel {{ color: {FG}; background: transparent; border: none; }}
+        QScrollArea {{ background-color: {BG}; border: none; }}
+        QWidget#inner_widget {{ background-color: {BG}; }}
+        QListWidget {{
+            background-color: {CARD_BG}; color: {FG};
+            border: 1px solid {BORDER}; border-radius: 5px;
+            outline: none;
+        }}
+        QListWidget::item {{ padding: 4px 8px; border-radius: 3px; }}
+        QListWidget::item:selected {{
+            background-color: {ACCENT_SECONDARY}; color: #ffffff;
+        }}
+        QListWidget::item:hover:!selected {{ background-color: {CARD_HOVER}; }}
+        QTabWidget::pane {{
+            border: 1px solid {BORDER}; background-color: {CARD_BG};
+            border-radius: 5px;
+        }}
+        QTabBar::tab {{
+            background-color: {PANEL_BG}; color: {FG_MUTED};
+            border: 1px solid {BORDER}; border-bottom: none;
+            padding: 5px 14px; border-top-left-radius: 5px;
+            border-top-right-radius: 5px; margin-right: 2px;
+        }}
+        QTabBar::tab:selected {{ background-color: {CARD_BG}; color: {FG}; }}
+        QTabBar::tab:hover:!selected {{ background-color: {CARD_HOVER}; color: {FG}; }}
+        QScrollBar:vertical {{
+            background: {PANEL_BG}; width: 8px;
+            border-radius: 4px; border: none; margin: 4px 4px 4px 0;
+        }}
+        QScrollBar::handle:vertical {{
+            background: {BORDER}; border-radius: 4px; min-height: 24px;
+        }}
+        QScrollBar::handle:vertical:hover {{ background: {FG_MUTED}; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QScrollBar:horizontal {{ height: 0; }}
+        QLineEdit {{
+            background-color: {CARD_BG}; color: {FG};
+            border: 1px solid {BORDER}; border-radius: 5px; padding: 4px 8px;
+        }}
+        QLineEdit:focus {{ border-color: {BORDER_ACTIVE}; }}
+        QComboBox {{
+            background-color: {CARD_BG}; color: {FG};
+            border: 1px solid {BORDER}; border-radius: 5px; padding: 4px 8px;
+        }}
+        QComboBox:hover {{ border-color: {BORDER_ACTIVE}; }}
+        QComboBox QAbstractItemView {{
+            background-color: {CARD_BG}; color: {FG};
+            selection-background-color: {ACCENT_SECONDARY};
+        }}
+        QSpinBox {{
+            background-color: {CARD_BG}; color: {FG};
+            border: 1px solid {BORDER}; border-radius: 5px; padding: 3px 6px;
+        }}
+        QSpinBox:focus {{ border-color: {BORDER_ACTIVE}; }}
+        QSlider::groove:horizontal {{
+            background: {BORDER}; height: 4px; border-radius: 2px;
+        }}
+        QSlider::handle:horizontal {{
+            background: {ACCENT_SECONDARY}; width: 14px; height: 14px;
+            margin: -5px 0; border-radius: 7px;
+        }}
+        QSlider::sub-page:horizontal {{ background: {ACCENT_SECONDARY}; border-radius: 2px; }}
+        QCheckBox {{ color: {FG}; spacing: 6px; }}
+        QCheckBox::indicator {{
+            width: 15px; height: 15px;
+            border: 1px solid {BORDER}; border-radius: 3px;
+            background: {PANEL_BG};
+        }}
+        QCheckBox::indicator:hover {{ border-color: {BORDER_ACTIVE}; }}
+        QCheckBox::indicator:checked {{
+            background-color: {ACCENT_SECONDARY}; border-color: {ACCENT_SECONDARY};
+        }}
+        QSplitter::handle {{ background: {BORDER}; }}
+        QFrame[frameShape="4"], QFrame[frameShape="5"] {{ color: {BORDER}; }}
+    """
+
+_BTN_TPL = (
+    "QPushButton {{"
+    "  background-color: {bg}; color: {fg}; border: 1px solid {bd};"
+    "  border-radius: 5px; padding: 4px 11px; font-size: 8pt;"
+    "}}"
+    "QPushButton:hover {{ background-color: {hv}; border-color: " + BORDER_ACTIVE + "; }}"
+    "QPushButton:pressed {{ background-color: {pr}; }}"
+    "QPushButton:disabled {{ background-color: {bg}; color: {FG_MUTED}; opacity: 0.5; }}"
+)
+
+def _style_btn(btn, kind="secondary"):
+    """Apply a themed style to *btn*.  kind: 'accent' | 'danger' | 'muted' | 'secondary'."""
+    btn.setCursor(Qt.CursorShape.PointingHandCursor)
+    if kind == "accent":
+        btn.setStyleSheet(_BTN_TPL.format(
+            bg=ACCENT_SECONDARY, fg="#ffffff", bd=ACCENT_SECONDARY,
+            hv="#5aabff", pr="#1f5fbb", FG_MUTED=FG_MUTED))
+    elif kind == "danger":
+        btn.setStyleSheet(_BTN_TPL.format(
+            bg=DANGER, fg="#ffffff", bd=DANGER,
+            hv="#ff6b63", pr="#a82820", FG_MUTED=FG_MUTED))
+    elif kind == "muted":
+        btn.setStyleSheet(_BTN_TPL.format(
+            bg=PANEL_BG, fg=FG_MUTED, bd=BORDER,
+            hv=CARD_HOVER, pr=BORDER, FG_MUTED=FG_MUTED))
+    else:  # secondary (default)
+        btn.setStyleSheet(_BTN_TPL.format(
+            bg=CARD_BG, fg=FG, bd=BORDER,
+            hv=CARD_HOVER, pr=PANEL_BG, FG_MUTED=FG_MUTED))
+
+def _make_panel(parent=None, bottom_border=False):
+    """Return a QFrame styled as a PANEL_BG header/footer band."""
+    from PyQt6.QtWidgets import QFrame
+    f = QFrame(parent)
+    border_rule = f"border-bottom: 1px solid {BORDER};" if bottom_border else \
+                  f"border-top: 1px solid {BORDER};"
+    f.setStyleSheet(
+        f"QFrame {{ background-color: {PANEL_BG}; {border_rule} }}"
+        f"QLabel {{ color: {FG}; background: transparent; border: none; }}"
+        f"QCheckBox {{ background: transparent; border: none; }}")
+    return f
+
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
 # NudeNet label groups (ordered explicit → suggestive → body → face)
@@ -3541,23 +3665,43 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Skipped Files — {len(combined)} total")
         dlg.resize(680, 420)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
         lbl = QLabel(
             f"<b>{len(combined)} file(s)</b> could not be indexed in the last run. "
             "These have also been logged to <i>photosearchpro_skipped_images.txt</i> / "
             "<i>photosearchpro_skipped_videos.txt</i> in your folder."
         )
         lbl.setWordWrap(True)
-        layout.addWidget(lbl)
+        hdr_lay.addWidget(lbl)
+        layout.addWidget(hdr)
+
+        inner = QWidget()
+        inner_lay = QVBoxLayout(inner)
+        inner_lay.setContentsMargins(12, 10, 12, 10)
         lst = QListWidget()
         lst.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         for kind, path, reason in combined:
             icon = "🖼" if kind == "image" else "🎬"
             lst.addItem(f"{icon}  {os.path.basename(path)}  —  {reason}\n    {path}")
-        layout.addWidget(lst)
+        inner_lay.addWidget(lst)
+        layout.addWidget(inner, stretch=1)
+
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.addStretch()
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(dlg.accept)
-        layout.addWidget(btn_close)
+        _style_btn(btn_close, "muted")
+        foot_lay.addWidget(btn_close)
+        layout.addWidget(footer)
         dlg.exec()
 
     def set_hf_token(self):
@@ -3838,19 +3982,34 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Select Folders to Index")
         dlg.resize(960, 480)
+        dlg.setStyleSheet(_dlg_stylesheet())
         outer = QVBoxLayout(dlg)
-        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lbl = QLabel("<b>Select Folders to Index</b>")
+        hdr_lbl.setStyleSheet(f"font-size: 10pt; color: {FG};")
+        hdr_lay.addWidget(hdr_lbl)
+        outer.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(10, 10, 10, 8)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        outer.addWidget(splitter, stretch=1)
+        body_lay.addWidget(splitter, stretch=1)
+        outer.addWidget(body, stretch=1)
 
         # ── Left panel: saved indexes ──────────────────────────────────────
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_layout.setContentsMargins(0, 0, 6, 0)
 
         saved_lbl = QLabel("Saved Indexes")
-        saved_lbl.setStyleSheet("font-weight: bold; font-size: 9pt;")
+        saved_lbl.setStyleSheet(f"font-weight: bold; font-size: 9pt; color: {FG};")
         left_layout.addWidget(saved_lbl)
 
         saved_list = QListWidget()
@@ -3858,10 +4017,13 @@ class ImageSearchApp(QMainWindow):
         left_layout.addWidget(saved_list, stretch=1)
 
         saved_btn_row = QHBoxLayout()
+        saved_btn_row.setSpacing(6)
         load_btn  = QPushButton("Load")
         del_btn   = QPushButton("Delete")
         load_btn.setToolTip("Load the selected saved index into the editor")
         del_btn.setToolTip("Remove this entry from the saved list")
+        _style_btn(load_btn, "secondary")
+        _style_btn(del_btn, "danger")
         saved_btn_row.addWidget(load_btn)
         saved_btn_row.addWidget(del_btn)
         saved_btn_row.addStretch()
@@ -3872,23 +4034,29 @@ class ImageSearchApp(QMainWindow):
         # ── Right panel: folder editor ─────────────────────────────────────
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_layout.setContentsMargins(6, 0, 0, 0)
 
-        right_layout.addWidget(QLabel(
+        hint_lbl = QLabel(
             "Add one or more folders — all are indexed together.\n"
             "The first folder stores the cache and settings files.\n"
             "Drag folders from your file manager and drop them into the list."
-        ))
+        )
+        hint_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        right_layout.addWidget(hint_lbl)
 
         list_widget = FolderDropListWidget()
         right_layout.addWidget(list_widget, stretch=1)
 
         edit_btn_row = QHBoxLayout()
+        edit_btn_row.setSpacing(6)
         add_btn       = QPushButton("Add Folder…")
         remove_btn    = QPushButton("Remove Selected")
         select_all_btn = QPushButton("Select All")
         select_all_btn.setToolTip("Select all folders in the list")
         select_all_btn.clicked.connect(list_widget.selectAll)
+        _style_btn(add_btn, "secondary")
+        _style_btn(remove_btn, "secondary")
+        _style_btn(select_all_btn, "muted")
         edit_btn_row.addWidget(add_btn)
         edit_btn_row.addWidget(remove_btn)
         edit_btn_row.addWidget(select_all_btn)
@@ -3969,8 +4137,9 @@ class ImageSearchApp(QMainWindow):
 
         # ── Bottom OK / Cancel ─────────────────────────────────────────────
         ok_btn     = QPushButton("OK")
-        ok_btn.setProperty("class", "accent")
         cancel_btn = QPushButton("Cancel")
+        _style_btn(ok_btn, "accent")
+        _style_btn(cancel_btn, "muted")
 
         def on_ok():
             if list_widget.count() == 0:
@@ -3981,11 +4150,14 @@ class ImageSearchApp(QMainWindow):
         ok_btn.clicked.connect(on_ok)
         cancel_btn.clicked.connect(dlg.reject)
 
-        bottom_row = QHBoxLayout()
-        bottom_row.addStretch()
-        bottom_row.addWidget(ok_btn)
-        bottom_row.addWidget(cancel_btn)
-        outer.addLayout(bottom_row)
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+        foot_lay.addStretch()
+        foot_lay.addWidget(ok_btn)
+        foot_lay.addWidget(cancel_btn)
+        outer.addWidget(footer)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return []
@@ -6602,15 +6774,32 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Search History & Saved Presets")
         dlg.resize(520, 500)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel("<b>Search History &amp; Saved Presets</b>"))
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(10, 10, 10, 8)
+        layout.addWidget(body, stretch=1)
 
         tabs = QTabWidget()
-        layout.addWidget(tabs, stretch=1)
+        body_lay.addWidget(tabs, stretch=1)
 
         # --- Recent Searches tab ---
         history_widget = QWidget()
         h_layout = QVBoxLayout(history_widget)
-        h_layout.addWidget(QLabel("Recent searches - double-click to run, or select and click Use:"))
+        h_layout.setContentsMargins(8, 8, 8, 8)
+        hint = QLabel("Double-click to run, or select and click Use:")
+        hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        h_layout.addWidget(hint)
         h_list = QListWidget()
         for item in self.search_history:
             h_list.addItem(f"{item['timestamp']}   {item['query']}")
@@ -6646,13 +6835,15 @@ class ImageSearchApp(QMainWindow):
 
         h_list.itemDoubleClicked.connect(lambda item: use_history())
         h_btn_row = QHBoxLayout()
+        h_btn_row.setSpacing(6)
         use_btn = QPushButton("Use")
-        use_btn.setProperty("class", "accent")
-        use_btn.clicked.connect(use_history)
         star_btn = QPushButton("Save as Preset")
-        star_btn.clicked.connect(star_history)
         clear_btn = QPushButton("Clear History")
-        clear_btn.setProperty("class", "danger")
+        _style_btn(use_btn, "accent")
+        _style_btn(star_btn, "secondary")
+        _style_btn(clear_btn, "danger")
+        use_btn.clicked.connect(use_history)
+        star_btn.clicked.connect(star_history)
         clear_btn.clicked.connect(clear_history)
         h_btn_row.addWidget(use_btn)
         h_btn_row.addWidget(star_btn)
@@ -6664,7 +6855,10 @@ class ImageSearchApp(QMainWindow):
         # --- Saved Presets tab ---
         presets_widget = QWidget()
         p_layout = QVBoxLayout(presets_widget)
-        p_layout.addWidget(QLabel("Saved preset searches - double-click to run:"))
+        p_layout.setContentsMargins(8, 8, 8, 8)
+        p_hint = QLabel("Double-click to run a preset:")
+        p_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        p_layout.addWidget(p_hint)
         p_list = QListWidget()
 
         def refresh_presets():
@@ -6693,11 +6887,12 @@ class ImageSearchApp(QMainWindow):
 
         p_list.itemDoubleClicked.connect(lambda item: use_preset())
         p_btn_row = QHBoxLayout()
+        p_btn_row.setSpacing(6)
         p_use_btn = QPushButton("Use")
-        p_use_btn.setProperty("class", "accent")
-        p_use_btn.clicked.connect(use_preset)
         p_del_btn = QPushButton("Delete")
-        p_del_btn.setProperty("class", "danger")
+        _style_btn(p_use_btn, "accent")
+        _style_btn(p_del_btn, "danger")
+        p_use_btn.clicked.connect(use_preset)
         p_del_btn.clicked.connect(delete_preset)
         p_btn_row.addWidget(p_use_btn)
         p_btn_row.addWidget(p_del_btn)
@@ -6705,31 +6900,52 @@ class ImageSearchApp(QMainWindow):
         p_layout.addLayout(p_btn_row)
         tabs.addTab(presets_widget, "Saved Presets")
 
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(dlg.accept)
-        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+        _style_btn(close_btn, "muted")
+        foot_lay.addWidget(close_btn)
+        layout.addWidget(footer)
         dlg.exec()
 
     def open_exclusions_dialog(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("Folder Exclusions")
-        dlg.resize(480, 380)
+        dlg.resize(480, 400)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        info = QLabel("Exclude images whose path contains any pattern below.\n"
-                      "Case-sensitive substring match (e.g. 'nsfw', 'temp', 'backup').\n"
-                      "Use forward slashes for folder separators (e.g. 'raw/originals').")
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        info = QLabel(
+            "<b>Folder Exclusions</b><br>"
+            "<span style='font-size:8pt;'>Exclude images whose path contains any pattern below. "
+            "Case-sensitive substring match (e.g. <code>nsfw</code>, <code>temp</code>). "
+            "Use forward slashes for separators.</span>")
         info.setWordWrap(True)
-        layout.addWidget(info)
+        hdr_lay.addWidget(info)
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(12, 10, 12, 8)
+        body_lay.setSpacing(8)
 
         listbox = QListWidget()
         for pattern in sorted(self.excluded_folders):
             listbox.addItem(pattern)
-        layout.addWidget(listbox, stretch=1)
+        body_lay.addWidget(listbox, stretch=1)
 
         entry_row = QHBoxLayout()
+        entry_row.setSpacing(6)
         entry = QLineEdit()
-        entry_row.addWidget(entry)
+        entry.setPlaceholderText("Type a path pattern and press Add…")
 
         def add_pattern():
             pat = entry.text().strip()
@@ -6750,24 +6966,31 @@ class ImageSearchApp(QMainWindow):
 
         entry.returnPressed.connect(add_pattern)
         add_btn = QPushButton("Add")
+        _style_btn(add_btn, "secondary")
         add_btn.clicked.connect(add_pattern)
+        entry_row.addWidget(entry)
         entry_row.addWidget(add_btn)
-        layout.addLayout(entry_row)
+        body_lay.addLayout(entry_row)
 
-        btn_row = QHBoxLayout()
-        rem_btn = QPushButton("Remove Selected")
-        rem_btn.setProperty("class", "danger")
-        rem_btn.clicked.connect(remove_pattern)
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dlg.accept)
-        btn_row.addWidget(rem_btn)
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
-
-        note = QLabel("Note: Run Refresh after changing exclusions to apply them to the index.")
+        note = QLabel("Run Refresh after changing exclusions to apply them to the index.")
         note.setStyleSheet(f"color: {ORANGE}; font-style: italic; font-size: 8pt;")
-        layout.addWidget(note)
+        body_lay.addWidget(note)
+        layout.addWidget(body, stretch=1)
+
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+        rem_btn = QPushButton("Remove Selected")
+        close_btn = QPushButton("Close")
+        _style_btn(rem_btn, "danger")
+        _style_btn(close_btn, "muted")
+        rem_btn.clicked.connect(remove_pattern)
+        close_btn.clicked.connect(dlg.accept)
+        foot_lay.addWidget(rem_btn)
+        foot_lay.addStretch()
+        foot_lay.addWidget(close_btn)
+        layout.addWidget(footer)
 
         dlg.exec()
 
@@ -6784,20 +7007,40 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Find Duplicates")
         dlg.setMinimumWidth(460)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        layout.addWidget(QLabel("Similarity threshold for duplicate detection:"))
-        layout.addWidget(QLabel("0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar"))
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel("<b>Find Duplicate Images</b>"))
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 12, 14, 12)
+        body_lay.setSpacing(10)
+
+        thresh_lbl = QLabel("Similarity threshold for duplicate detection:")
+        thresh_lbl.setStyleSheet(f"color: {FG};")
+        body_lay.addWidget(thresh_lbl)
+
+        hint = QLabel("0.97 = near-identical   •   0.90 = very similar   •   0.80 = similar")
+        hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(hint)
 
         thresh_slider = QSlider(Qt.Orientation.Horizontal)
         thresh_slider.setRange(700, 999)
         thresh_slider.setValue(970)
         thresh_label = QLabel("0.970")
+        thresh_label.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; min-width: 40px;")
         thresh_slider.valueChanged.connect(lambda v: thresh_label.setText(f"{v/1000.0:.3f}"))
-        row = QHBoxLayout()
-        row.addWidget(thresh_slider)
-        row.addWidget(thresh_label)
-        layout.addLayout(row)
+        slider_row = QHBoxLayout()
+        slider_row.addWidget(thresh_slider)
+        slider_row.addWidget(thresh_label)
+        body_lay.addLayout(slider_row)
 
         auto_cb = QCheckBox("Auto-adjust threshold if no matches found")
         auto_cb.setToolTip(
@@ -6806,10 +7049,13 @@ class ImageSearchApp(QMainWindow):
             "is found or the floor of 0.70 is reached."
         )
         auto_cb.setChecked(False)
-        layout.addWidget(auto_cb)
+        body_lay.addWidget(auto_cb)
 
         n_images = len(self.image_paths)
-        layout.addWidget(QLabel(f"{n_images:,} images in index"))
+        count_lbl = QLabel(f"{n_images:,} images in index")
+        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(count_lbl)
+        layout.addWidget(body)
 
         def start_scan():
             threshold = thresh_slider.value() / 1000.0
@@ -6819,15 +7065,20 @@ class ImageSearchApp(QMainWindow):
             self.progress.setRange(0, 0)
             Thread(target=lambda: self._find_duplicates_worker(threshold, auto_adjust), daemon=True).start()
 
-        btn_frame = QHBoxLayout()
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
         scan_btn = QPushButton("Find Duplicates")
-        scan_btn.setProperty("class", "accent")
-        scan_btn.clicked.connect(start_scan)
         cancel_btn = QPushButton("Cancel")
+        _style_btn(scan_btn, "accent")
+        _style_btn(cancel_btn, "muted")
+        scan_btn.clicked.connect(start_scan)
         cancel_btn.clicked.connect(dlg.reject)
-        btn_frame.addWidget(scan_btn)
-        btn_frame.addWidget(cancel_btn)
-        layout.addLayout(btn_frame)
+        foot_lay.addStretch()
+        foot_lay.addWidget(scan_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
         dlg.exec()
 
     def _find_duplicates_worker(self, threshold, auto_adjust=False):
@@ -6969,85 +7220,15 @@ class ImageSearchApp(QMainWindow):
             f"Duplicate Finder — {len(group_data)} groups, {total_redundant} redundant files{thresh_str}")
         dlg.resize(1020, 720)
 
-        # ── Per-button style helpers ──────────────────────────────────────────
-        _btn_base = (
-            "QPushButton {{"
-            "  background-color: {bg}; color: {fg}; border: 1px solid {bd};"
-            "  border-radius: 5px; padding: 4px 11px; font-size: 8pt;"
-            "}}"
-            "QPushButton:hover {{ background-color: {hv}; border-color: {BORDER_ACTIVE}; }}"
-            "QPushButton:pressed {{ background-color: {pr}; }}"
-        )
-        def _style_btn(btn, kind="secondary"):
-            if kind == "accent":
-                btn.setStyleSheet(_btn_base.format(
-                    bg=ACCENT_SECONDARY, fg="#ffffff", bd=ACCENT_SECONDARY,
-                    hv="#5aabff", pr="#1f5fbb",
-                    BORDER_ACTIVE=BORDER_ACTIVE))
-            elif kind == "danger":
-                btn.setStyleSheet(_btn_base.format(
-                    bg=DANGER, fg="#ffffff", bd=DANGER,
-                    hv="#ff6b63", pr="#a82820",
-                    BORDER_ACTIVE=BORDER_ACTIVE))
-            elif kind == "muted":
-                btn.setStyleSheet(_btn_base.format(
-                    bg=PANEL_BG, fg=FG_MUTED, bd=BORDER,
-                    hv=CARD_HOVER, pr=BORDER,
-                    BORDER_ACTIVE=BORDER_ACTIVE))
-            else:  # secondary
-                btn.setStyleSheet(_btn_base.format(
-                    bg=CARD_BG, fg=FG, bd=BORDER,
-                    hv=CARD_HOVER, pr=PANEL_BG,
-                    BORDER_ACTIVE=BORDER_ACTIVE))
-
-        # ── Full dialog dark stylesheet ───────────────────────────────────────
-        dlg.setStyleSheet(f"""
-            QDialog {{ background-color: {BG}; color: {FG}; }}
-            QLabel {{ color: {FG}; background: transparent; border: none; }}
-            QScrollArea {{ background-color: {BG}; border: none; }}
-            QWidget#inner_widget {{ background-color: {BG}; }}
-            QScrollBar:vertical {{
-                background: {PANEL_BG}; width: 8px;
-                border-radius: 4px; border: none; margin: 4px 4px 4px 0;
-            }}
-            QScrollBar::handle:vertical {{
-                background: {BORDER}; border-radius: 4px; min-height: 24px;
-            }}
-            QScrollBar::handle:vertical:hover {{ background: {FG_MUTED}; }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
-            QScrollBar:horizontal {{ height: 0; }}
-            QComboBox {{
-                background-color: {CARD_BG}; color: {FG};
-                border: 1px solid {BORDER}; border-radius: 5px; padding: 4px 8px;
-            }}
-            QComboBox:hover {{ border-color: {BORDER_ACTIVE}; }}
-            QComboBox QAbstractItemView {{
-                background-color: {CARD_BG}; color: {FG};
-                selection-background-color: {ACCENT_SECONDARY};
-            }}
-            QCheckBox {{ color: {FG}; spacing: 6px; }}
-            QCheckBox::indicator {{
-                width: 15px; height: 15px;
-                border: 1px solid {BORDER}; border-radius: 3px;
-                background: {PANEL_BG};
-            }}
-            QCheckBox::indicator:hover {{ border-color: {BORDER_ACTIVE}; }}
-            QCheckBox::indicator:checked {{
-                background-color: {ACCENT_SECONDARY};
-                border-color: {ACCENT_SECONDARY};
-                image: none;
-            }}
-        """)
+        # Use shared _style_btn and _dlg_stylesheet helpers
+        dlg.setStyleSheet(_dlg_stylesheet())
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         # ── Header panel ──────────────────────────────────────────────────────
-        hdr_panel = QFrame()
-        hdr_panel.setStyleSheet(
-            f"QFrame {{ background-color: {PANEL_BG}; border-bottom: 1px solid {BORDER}; }}"
-            f"QLabel {{ color: {FG}; background: transparent; border: none; }}")
+        hdr_panel = _make_panel(bottom_border=True)
         hdr_panel_layout = QVBoxLayout(hdr_panel)
         hdr_panel_layout.setContentsMargins(16, 12, 16, 12)
         hdr_panel_layout.setSpacing(4)
@@ -7472,24 +7653,41 @@ class ImageSearchApp(QMainWindow):
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Smart Albums - Auto-Collections")
-        dlg.resize(400, 230)
-        dlg.setFixedSize(400, 230)
+        dlg.setFixedSize(420, 230)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        lbl = QLabel("Automatically group your images into thematic albums\nusing AI clustering on their visual embeddings.")
-        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(lbl)
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel(
+            "<b>Smart Albums</b> — AI-based auto-collections<br>"
+            f"<span style='font-size:8pt;color:{FG_MUTED};'>"
+            "Groups images by visual similarity using K-Means clustering.</span>"))
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 12, 14, 12)
+        body_lay.setSpacing(10)
 
         spin_row = QHBoxLayout()
-        spin_row.addWidget(QLabel("Number of albums:"))
+        spin_lbl = QLabel("Number of albums:")
+        spin_lbl.setStyleSheet(f"color: {FG};")
+        spin_row.addWidget(spin_lbl)
         n_clusters_spin = QSpinBox()
         n_clusters_spin.setRange(2, 50)
         n_clusters_spin.setValue(default_clusters)
         spin_row.addWidget(n_clusters_spin)
         spin_row.addStretch()
-        layout.addLayout(spin_row)
+        body_lay.addLayout(spin_row)
 
-        layout.addWidget(QLabel(f"{n_images:,} images will be clustered"))
+        count_lbl = QLabel(f"{n_images:,} images will be clustered")
+        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(count_lbl)
+        layout.addWidget(body, stretch=1)
 
         def start_clustering():
             n_clusters = n_clusters_spin.value()
@@ -7498,15 +7696,20 @@ class ImageSearchApp(QMainWindow):
             self.progress.setRange(0, 0)
             Thread(target=lambda: self._smart_albums_worker(n_clusters), daemon=True).start()
 
-        btn_row = QHBoxLayout()
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
         build_btn = QPushButton("Build Smart Albums")
-        build_btn.setProperty("class", "accent")
-        build_btn.clicked.connect(start_clustering)
         cancel_btn = QPushButton("Cancel")
+        _style_btn(build_btn, "accent")
+        _style_btn(cancel_btn, "muted")
+        build_btn.clicked.connect(start_clustering)
         cancel_btn.clicked.connect(dlg.reject)
-        btn_row.addWidget(build_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        foot_lay.addStretch()
+        foot_lay.addWidget(build_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
         dlg.exec()
 
     def _smart_albums_worker(self, n_clusters):
@@ -7567,19 +7770,34 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"Smart Albums - {len(cluster_info)} Auto-Collections")
         dlg.resize(920, 660)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        info_lbl = QLabel("AI-generated collections based on visual similarity. Click 'View Album' to browse a collection.")
-        info_lbl.setStyleSheet(f"background-color: {PANEL_BG}; padding: 5px;")
-        layout.addWidget(info_lbl)
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        info_lbl = QLabel(
+            f"<b>{len(cluster_info)} Smart Albums</b> — AI-generated collections based on visual similarity."
+            "  Click <i>View Album</i> to browse a collection.")
+        info_lbl.setWordWrap(True)
+        hdr_lay.addWidget(info_lbl)
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(10, 10, 20, 10)
+        layout.addWidget(body, stretch=1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
-        grid_layout.setSpacing(8)
+        grid_layout.setSpacing(10)
         scroll.setWidget(grid_widget)
-        layout.addWidget(scroll, stretch=1)
+        body_lay.addWidget(scroll, stretch=1)
 
         ALBUM_THUMB = (160, 160)
         COLS = 4
@@ -7590,8 +7808,14 @@ class ImageSearchApp(QMainWindow):
             row, col = divmod(idx, COLS)
 
             card = QFrame()
-            card.setStyleSheet(f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+            card.setObjectName("album_card")
+            card.setStyleSheet(
+                f"QFrame#album_card {{ background-color: {CARD_BG}; border: 1px solid {BORDER};"
+                f"  border-radius: 7px; }}"
+                f"QLabel {{ background: transparent; border: none; color: {FG}; }}")
             card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 8, 8, 8)
+            card_layout.setSpacing(5)
             card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
             try:
@@ -7613,20 +7837,22 @@ class ImageSearchApp(QMainWindow):
             except Exception:
                 no_prev = QLabel("[preview unavailable]")
                 no_prev.setFixedSize(160, 80)
+                no_prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                no_prev.setStyleSheet(f"color: {FG_MUTED};")
                 card_layout.addWidget(no_prev)
 
             alb_title = QLabel(f"Album {idx + 1}")
-            alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt; border: none;")
+            alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
             card_layout.addWidget(alb_title)
 
             size_lbl = QLabel(f"{info['size']:,} images")
-            size_lbl.setStyleSheet("border: none;")
+            size_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
             card_layout.addWidget(size_lbl)
 
             def view_album(members=info["members"], album_num=idx + 1):
                 self.cancel_search(clear_ui=True)
                 album_results = [
-                    (1.0, self.image_paths[i], "image", {})  # already absolute
+                    (1.0, self.image_paths[i], "image", {})
                     for i in members
                 ]
                 self.all_search_results = album_results
@@ -7643,31 +7869,35 @@ class ImageSearchApp(QMainWindow):
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
 
-            view_btn = QPushButton("View Album")
-            view_btn.clicked.connect(lambda _, fn=view_album: fn())
-            card_layout.addWidget(view_btn)
-
             def rename_album(members=info["members"], album_num=idx + 1):
                 paths = [self.image_paths[i] for i in members]
                 rename_dlg = BatchRenameDialog(
                     dlg, paths, suggested=f"Album_{album_num}", app=self)
                 rename_dlg.exec()
 
+            view_btn = QPushButton("View Album")
             rename_btn = QPushButton("Rename…")
+            _style_btn(view_btn, "accent")
+            _style_btn(rename_btn, "muted")
+            view_btn.clicked.connect(lambda _, fn=view_album: fn())
             rename_btn.clicked.connect(lambda _, fn=rename_album: fn())
+            card_layout.addWidget(view_btn)
             card_layout.addWidget(rename_btn)
 
             grid_layout.addWidget(card, row, col)
 
-        bottom_row = QHBoxLayout()
+        albums_footer = _make_panel()
+        alb_foot_lay = QHBoxLayout(albums_footer)
+        alb_foot_lay.setContentsMargins(12, 8, 12, 8)
         tip_lbl = QLabel("Tip: Rebuild with more or fewer albums to change granularity.")
-        tip_lbl.setStyleSheet("color: #888888; font-size: 8pt;")
-        bottom_row.addWidget(tip_lbl)
-        bottom_row.addStretch()
+        tip_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        alb_foot_lay.addWidget(tip_lbl)
+        alb_foot_lay.addStretch()
         close_btn = QPushButton("Close")
+        _style_btn(close_btn, "muted")
         close_btn.clicked.connect(dlg.accept)
-        bottom_row.addWidget(close_btn)
-        layout.addLayout(bottom_row)
+        alb_foot_lay.addWidget(close_btn)
+        layout.addWidget(albums_footer)
         dlg.exec()
 
 
@@ -7697,20 +7927,29 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("NSFW Scan — Select Labels")
         dlg.resize(460, 580)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
         header = QLabel(
-            "Select which NudeNet labels to detect.\n"
-            "Images will be grouped and sorted by the labels found."
+            "<b>NSFW Scan</b><br>"
+            "<span style='font-size:8pt;'>Select which NudeNet labels to detect. "
+            "Images will be grouped and sorted by the labels found.</span>"
         )
-        header.setStyleSheet(f"background-color: {PANEL_BG}; padding: 6px;")
         header.setWordWrap(True)
-        layout.addWidget(header)
+        hdr_lay.addWidget(header)
+        layout.addWidget(hdr)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         content = QWidget()
         content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(14, 10, 20, 10)
         content_layout.setSpacing(2)
         scroll.setWidget(content)
         layout.addWidget(scroll, stretch=1)
@@ -7719,9 +7958,8 @@ class ImageSearchApp(QMainWindow):
         for group_name, labels in NUDENET_LABEL_GROUPS.items():
             grp_lbl = QLabel(group_name)
             grp_lbl.setStyleSheet(
-                f"color: {ACCENT}; font-weight: bold; font-size: 9pt; padding-top: 6px;")
+                f"color: {ACCENT}; font-weight: bold; font-size: 9pt; padding-top: 8px;")
             content_layout.addWidget(grp_lbl)
-            # Default: check Explicit + Nudity; uncheck the rest
             default_checked = group_name in ("Explicit", "Nudity")
             for label in labels:
                 cb = QCheckBox("  " + label.replace("_", " ").title())
@@ -7730,27 +7968,28 @@ class ImageSearchApp(QMainWindow):
                 checkboxes[label] = cb
         content_layout.addStretch()
 
-        # Select All / None row
-        sel_row = QHBoxLayout()
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
         btn_all  = QPushButton("Select All")
         btn_none = QPushButton("Select None")
+        btn_run    = QPushButton("Run Scan")
+        btn_cancel = QPushButton("Cancel")
+        _style_btn(btn_all, "muted")
+        _style_btn(btn_none, "muted")
+        _style_btn(btn_run, "accent")
+        _style_btn(btn_cancel, "muted")
         btn_all.clicked.connect(lambda: [cb.setChecked(True)  for cb in checkboxes.values()])
         btn_none.clicked.connect(lambda: [cb.setChecked(False) for cb in checkboxes.values()])
-        sel_row.addWidget(btn_all)
-        sel_row.addWidget(btn_none)
-        sel_row.addStretch()
-        layout.addLayout(sel_row)
-
-        btn_row = QHBoxLayout()
-        btn_run    = QPushButton("Run Scan")
-        btn_run.setProperty("class", "accent")
-        btn_cancel = QPushButton("Cancel")
         btn_run.clicked.connect(dlg.accept)
         btn_cancel.clicked.connect(dlg.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(btn_run)
-        btn_row.addWidget(btn_cancel)
-        layout.addLayout(btn_row)
+        foot_lay.addWidget(btn_all)
+        foot_lay.addWidget(btn_none)
+        foot_lay.addStretch()
+        foot_lay.addWidget(btn_run)
+        foot_lay.addWidget(btn_cancel)
+        layout.addWidget(footer)
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -7842,21 +8081,31 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle(f"NSFW Scan Results — {total_flagged:,} image(s) flagged")
         dlg.resize(980, 720)
+        dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QHBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
         header = QLabel(
-            f"{total_flagged:,} image(s) flagged across {len(results_by_label)} label bucket(s). "
-            "Buckets are ordered by severity. An image may appear in multiple buckets. "
-            "Click a bucket's button to browse those images sorted by confidence score."
+            f"<b>{total_flagged:,} image(s)</b> flagged across "
+            f"<b>{len(results_by_label)}</b> label bucket(s). "
+            "Buckets are ordered by severity. An image may appear in multiple buckets."
         )
         header.setWordWrap(True)
-        header.setStyleSheet(f"background-color: {PANEL_BG}; padding: 6px;")
-        layout.addWidget(header)
+        hdr_lay.addWidget(header, stretch=1)
 
-        # ── View All Flagged ──────────────────────────────────────────────────
-        top_row = QHBoxLayout()
-        btn_view_all = QPushButton(f"View All Flagged  ({total_flagged:,} images) →")
-        btn_view_all.setProperty("class", "accent")
+        btn_view_all = QPushButton(f"View All  ({total_flagged:,})")
+        _style_btn(btn_view_all, "accent")
+        hdr_lay.addWidget(btn_view_all)
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(10, 10, 10, 10)
+        layout.addWidget(body, stretch=1)
 
         def _view_all():
             scored = sorted(
@@ -7870,18 +8119,16 @@ class ImageSearchApp(QMainWindow):
             )
 
         btn_view_all.clicked.connect(lambda _: _view_all())
-        top_row.addStretch()
-        top_row.addWidget(btn_view_all)
-        layout.addLayout(top_row)
 
         # ── Label bucket grid ─────────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
         grid_layout.setSpacing(10)
         scroll.setWidget(grid_widget)
-        layout.addWidget(scroll, stretch=1)
+        body_lay.addWidget(scroll, stretch=1)
 
         THUMB_SIZE = (160, 160)
         COLS = 4
@@ -7901,12 +8148,16 @@ class ImageSearchApp(QMainWindow):
             row, col = divmod(card_idx, COLS)
 
             card = QFrame()
+            card.setObjectName("nsfw_card")
             card.setStyleSheet(
-                f"background-color: {CARD_BG}; border: 1px solid {BORDER};")
+                f"QFrame#nsfw_card {{ background-color: {CARD_BG}; border: 1px solid {BORDER};"
+                f"  border-radius: 7px; }}"
+                f"QLabel {{ background: transparent; border: none; color: {FG}; }}")
             card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(8, 8, 8, 8)
+            card_layout.setSpacing(5)
             card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-            # Representative thumbnail
             try:
                 img = Image.open(get_safe_path(rep_path))
                 img.load()
@@ -7919,18 +8170,18 @@ class ImageSearchApp(QMainWindow):
             except Exception:
                 ph = QLabel("[preview unavailable]")
                 ph.setFixedSize(160, 80)
+                ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                ph.setStyleSheet(f"color: {FG_MUTED};")
                 card_layout.addWidget(ph)
 
             title_lbl = QLabel(label.replace("_", " ").title())
             title_lbl.setStyleSheet(
-                f"color: {ACCENT_SECONDARY}; font-weight: bold;"
-                " font-size: 9pt; border: none;")
+                f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
             title_lbl.setWordWrap(True)
             card_layout.addWidget(title_lbl)
 
-            info_lbl = QLabel(
-                f"{len(entries):,} image(s)  •  top score: {rep_score:.2f}")
-            info_lbl.setStyleSheet("border: none; font-size: 8pt;")
+            info_lbl = QLabel(f"{len(entries):,} image(s)  •  top: {rep_score:.2f}")
+            info_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
             card_layout.addWidget(info_lbl)
 
             def _view_bucket(lbl=label, ents=entries):
@@ -7939,29 +8190,33 @@ class ImageSearchApp(QMainWindow):
                     lbl.replace("_", " ").title()
                 )
 
-            view_btn = QPushButton("View Images")
-            view_btn.clicked.connect(lambda _, fn=_view_bucket: fn())
-            card_layout.addWidget(view_btn)
-
             def _rename_bucket(lbl=label, ents=entries):
                 paths = [p for p, _s in ents]
                 clean_label = lbl.replace("_", " ").title()
                 rename_dlg = BatchRenameDialog(dlg, paths, suggested=clean_label, app=self)
                 rename_dlg.exec()
 
+            view_btn = QPushButton("View Images")
             rename_btn = QPushButton("Rename…")
+            _style_btn(view_btn, "accent")
+            _style_btn(rename_btn, "muted")
+            view_btn.clicked.connect(lambda _, fn=_view_bucket: fn())
             rename_btn.clicked.connect(lambda _, fn=_rename_bucket: fn())
+            card_layout.addWidget(view_btn)
             card_layout.addWidget(rename_btn)
 
             grid_layout.addWidget(card, row, col)
 
         # ── Close ─────────────────────────────────────────────────────────────
-        close_row = QHBoxLayout()
+        nsfw_footer = _make_panel()
+        nsfw_foot_lay = QHBoxLayout(nsfw_footer)
+        nsfw_foot_lay.setContentsMargins(12, 8, 12, 8)
+        nsfw_foot_lay.addStretch()
         close_btn = QPushButton("Close")
+        _style_btn(close_btn, "muted")
         close_btn.clicked.connect(dlg.accept)
-        close_row.addStretch()
-        close_row.addWidget(close_btn)
-        layout.addLayout(close_row)
+        nsfw_foot_lay.addWidget(close_btn)
+        layout.addWidget(nsfw_footer)
 
         dlg.exec()
 
@@ -8080,44 +8335,63 @@ class ImageSearchApp(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("Face Presets — Person Recognition")
         dlg.resize(920, 620)
+        dlg.setStyleSheet(_dlg_stylesheet())
         main_layout = QVBoxLayout(dlg)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
 
-        # ── Face index status bar ──────────────────────────────────────────
-        idx_bar = QHBoxLayout()
+        # ── Header / Face index status bar ────────────────────────────────
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QHBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.setSpacing(8)
         n_indexed = len(self.face_index)
         n_total = len(self.image_paths)
         idx_status_lbl = QLabel(
-            f"Face index: {n_indexed:,} / {n_total:,} images scanned"
-            if n_indexed else "Face index not built yet — click 'Build Face Index' to start."
+            f"<b>Face Presets</b> — "
+            + (f"<span style='color:{FG_MUTED};'>{n_indexed:,} / {n_total:,} images scanned</span>"
+               if n_indexed else
+               f"<span style='color:{ORANGE};'>Face index not built yet</span>")
         )
-        idx_bar.addWidget(idx_status_lbl)
-        idx_bar.addStretch()
+        hdr_lay.addWidget(idx_status_lbl, stretch=1)
         build_btn = QPushButton("Build / Rebuild Face Index")
         build_btn.setToolTip(
             "Scans every indexed image with InsightFace ArcFace (buffalo_l).\n"
             "Downloads ~300 MB model on first run.\n"
             "Required before searching by person."
         )
-        idx_bar.addWidget(build_btn)
-        main_layout.addLayout(idx_bar)
+        _style_btn(build_btn, "secondary")
+        hdr_lay.addWidget(build_btn)
+        main_layout.addWidget(hdr)
+
+        body_widget = QWidget()
+        body_outer = QVBoxLayout(body_widget)
+        body_outer.setContentsMargins(10, 10, 10, 8)
+        main_layout.addWidget(body_widget, stretch=1)
 
         # ── Split: preset list (left) + reference photos (right) ──────────
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        main_layout.addWidget(splitter, stretch=1)
+        body_outer.addWidget(splitter, stretch=1)
 
         # Left panel — preset list
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
-        left_layout.addWidget(QLabel("Person Presets:"))
+        left_layout.setContentsMargins(0, 0, 6, 0)
+        preset_hdr = QLabel("Person Presets")
+        preset_hdr.setStyleSheet(f"font-weight: bold; font-size: 9pt; color: {FG};")
+        left_layout.addWidget(preset_hdr)
         preset_list = QListWidget()
         for name in sorted(self.face_presets.keys()):
             preset_list.addItem(name)
         left_layout.addWidget(preset_list, stretch=1)
         preset_btn_row = QHBoxLayout()
-        add_preset_btn = QPushButton("New Preset")
+        preset_btn_row.setSpacing(5)
+        add_preset_btn   = QPushButton("New")
         rename_preset_btn = QPushButton("Rename")
-        del_preset_btn = QPushButton("Delete")
-        del_preset_btn.setProperty("class", "danger")
+        del_preset_btn   = QPushButton("Delete")
+        _style_btn(add_preset_btn, "secondary")
+        _style_btn(rename_preset_btn, "secondary")
+        _style_btn(del_preset_btn, "danger")
         preset_btn_row.addWidget(add_preset_btn)
         preset_btn_row.addWidget(rename_preset_btn)
         preset_btn_row.addWidget(del_preset_btn)
@@ -8127,11 +8401,15 @@ class ImageSearchApp(QMainWindow):
         # Right panel — reference photos for selected preset
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(6, 0, 0, 0)
         right_header = QHBoxLayout()
-        right_header.addWidget(QLabel("Reference photos (select a preset to manage):"))
+        ref_hdr_lbl = QLabel("Reference photos")
+        ref_hdr_lbl.setStyleSheet(f"font-weight: bold; font-size: 9pt; color: {FG};")
+        right_header.addWidget(ref_hdr_lbl)
         right_header.addStretch()
         add_ref_btn = QPushButton("Add Reference Photo…")
         add_ref_btn.setEnabled(False)
+        _style_btn(add_ref_btn, "secondary")
         right_header.addWidget(add_ref_btn)
         right_layout.addLayout(right_header)
         ref_scroll = QScrollArea()
@@ -8145,31 +8423,35 @@ class ImageSearchApp(QMainWindow):
         splitter.setSizes([280, 640])
 
         # ── Bottom search controls ─────────────────────────────────────────
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        main_layout.addWidget(sep)
-        search_bar = QHBoxLayout()
-        search_bar.addWidget(QLabel("Match threshold:"))
+        face_footer = _make_panel()
+        face_foot_lay = QHBoxLayout(face_footer)
+        face_foot_lay.setContentsMargins(12, 8, 12, 8)
+        face_foot_lay.setSpacing(8)
+        thresh_caption = QLabel("Match threshold:")
+        thresh_caption.setStyleSheet(f"color: {FG};")
+        face_foot_lay.addWidget(thresh_caption)
         thresh_slider = QSlider(Qt.Orientation.Horizontal)
         thresh_slider.setRange(20, 80)
         thresh_slider.setValue(45)
         thresh_lbl = QLabel("0.45")
+        thresh_lbl.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; min-width: 36px;")
         thresh_slider.valueChanged.connect(lambda v: thresh_lbl.setText(f"{v/100:.2f}"))
         thresh_slider.setToolTip(
             "Cosine similarity required to count as a match.\n"
             "0.45 is a good starting point — lower to catch more, raise to reduce false positives."
         )
-        search_bar.addWidget(thresh_slider)
-        search_bar.addWidget(thresh_lbl)
-        search_bar.addStretch()
+        face_foot_lay.addWidget(thresh_slider)
+        face_foot_lay.addWidget(thresh_lbl)
+        face_foot_lay.addStretch()
         search_btn = QPushButton("Search by Selected Person")
-        search_btn.setProperty("class", "accent")
         search_btn.setEnabled(False)
-        search_bar.addWidget(search_btn)
+        _style_btn(search_btn, "accent")
+        face_foot_lay.addWidget(search_btn)
         close_btn = QPushButton("Close")
+        _style_btn(close_btn, "muted")
         close_btn.clicked.connect(dlg.accept)
-        search_bar.addWidget(close_btn)
-        main_layout.addLayout(search_bar)
+        face_foot_lay.addWidget(close_btn)
+        main_layout.addWidget(face_footer)
 
         # ── Helpers ────────────────────────────────────────────────────────
 
@@ -8242,7 +8524,7 @@ class ImageSearchApp(QMainWindow):
                 name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 cell_layout.addWidget(name_lbl)
                 rm_btn = QPushButton("Remove")
-                rm_btn.setProperty("class", "danger")
+                _style_btn(rm_btn, "danger")
 
                 def _remove_ref(checked=False, i=idx, n=name):
                     self.face_presets[n]["references"].pop(i)
