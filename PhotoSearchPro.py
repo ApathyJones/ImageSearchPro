@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMenu, QDialog, QTabWidget, QProgressBar,
     QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
-    QInputDialog, QComboBox)
+    QInputDialog, QComboBox, QGroupBox)
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon,
     QPalette, QColor)
