@@ -399,10 +399,13 @@ NUDENET_LABEL_GROUPS = {
 
 # ── Built-in rename category sets (used for CLIP auto-naming) ─────────────────
 RENAME_CATEGORIES = {
+    # Clothing: colour-free garment types — colour is detected separately
     "Clothing": [
-        "Red Shirt", "Blue Shirt", "Green Shirt", "White Shirt", "Black Shirt",
-        "T-Shirt", "Blouse", "Dress", "Skirt", "Jeans", "Pants", "Shorts",
-        "Jacket", "Coat", "Hoodie", "Suit", "Swimwear", "Bikini", "Uniform",
+        "T-Shirt", "Shirt", "Blouse", "Tank Top", "Crop Top", "Sports Bra",
+        "Dress", "Skirt", "Jeans", "Trousers", "Shorts", "Leggings",
+        "Jacket", "Coat", "Hoodie", "Cardigan", "Vest", "Suit",
+        "Bikini", "One-Piece Swimsuit", "Swimwear",
+        "Uniform", "Pyjamas",
     ],
     "Location": [
         "Beach", "Mountain", "Forest", "City Street", "Park", "Desert",
@@ -423,6 +426,12 @@ RENAME_CATEGORIES = {
         "Work", "Art", "Technology", "Vehicle", "Aerial View",
     ],
 }
+
+# Colours used for the Clothing two-pass colour detection.
+CLOTHING_COLORS = [
+    "Red", "Orange", "Yellow", "Green", "Blue", "Purple", "Pink",
+    "White", "Black", "Grey", "Brown", "Beige", "Navy", "Teal", "Maroon",
+]
 
 # Per-category CLIP prompt templates.
 # Domain-specific phrasing aligns text embeddings much more precisely with
@@ -6056,8 +6065,7 @@ class ImageSearchApp(QMainWindow):
     def _get_group_embedding(self, file_paths):
         """Return the normalised mean embedding for a list of file paths.
 
-        Looks up each path in the current index and averages their embeddings.
-        Returns None if none of the paths are indexed.
+        Returns (emb, idxs) or None if no paths are indexed.
         """
         path_to_idx = {p: i for i, p in enumerate(self.image_paths)}
         idxs = [path_to_idx[p] for p in file_paths if p in path_to_idx]
@@ -6070,13 +6078,61 @@ class ImageSearchApp(QMainWindow):
             emb = emb / norm
         return emb, idxs
 
+    def _score_single_category(self, group_emb, cat_name, labels):
+        """Score all labels in one category against *group_emb*.
+
+        For the Clothing category a second CLIP pass detects the dominant colour
+        and prepends it to the garment type, e.g. "Bikini" → "Purple Bikini".
+
+        Returns (best_label, margin) where margin = top_score − category_mean.
+        Returns ("", 0.0) on any error.
+        """
+        template = CATEGORY_PROMPTS.get(cat_name, _DEFAULT_PROMPT)
+        prompted = [template(lbl) for lbl in labels]
+        try:
+            text_embs = self.clip_model.encode_text(prompted)
+        except Exception as e:
+            safe_print(f"[RENAME] encode_text failed for '{cat_name}': {e}")
+            return "", 0.0
+
+        sims = text_embs @ group_emb
+        best_idx = int(np.argmax(sims))
+        best_score = float(sims[best_idx])
+        margin = best_score - float(sims.mean())
+        best_label = labels[best_idx]
+
+        # ── Clothing: two-pass colour detection ──────────────────────────────
+        # Re-score each colour using the specific garment type already found so
+        # CLIP considers both together: "a person wearing purple bikini" rather
+        # than the generic "a person wearing purple coloured clothing".
+        if cat_name == "Clothing":
+            color_prompts = [
+                f"a person wearing {c.lower()} {best_label.lower()}"
+                for c in CLOTHING_COLORS
+            ]
+            try:
+                color_embs = self.clip_model.encode_text(color_prompts)
+                color_sims = color_embs @ group_emb
+                best_color = CLOTHING_COLORS[int(np.argmax(color_sims))]
+                safe_print(
+                    f"[RENAME] Clothing colour pass → '{best_color}' "
+                    f"(score {float(color_sims.max()):.3f})"
+                )
+                best_label = f"{best_color} {best_label}"
+            except Exception as e:
+                safe_print(f"[RENAME] Colour pass failed: {e}")
+
+        safe_print(
+            f"[RENAME] '{cat_name}' → '{best_label}' "
+            f"(score {best_score:.3f}, margin {margin:.3f})"
+        )
+        return best_label, margin
+
     def _auto_name_group(self, file_paths, labels, category_name=""):
-        """Use CLIP text embeddings to find the closest label to a group of images.
+        """Find the best label for *file_paths* within a single category.
 
-        Uses a category-specific prompt template (e.g. "a person wearing X"
-        for Clothing) for much better alignment than the generic "a photo of X".
-
-        Returns the best-matching label string, or "" if unavailable.
+        Returns the best-matching label string (with colour prefix for Clothing),
+        or "" if unavailable.
         """
         if self.clip_model is None or self.image_embeddings is None:
             return ""
@@ -6086,36 +6142,18 @@ class ImageSearchApp(QMainWindow):
         result = self._get_group_embedding(file_paths)
         if result is None:
             return ""
-        group_emb, idxs = result
+        group_emb, _idxs = result
 
-        template = CATEGORY_PROMPTS.get(category_name, _DEFAULT_PROMPT)
-        prompted = [template(lbl) for lbl in labels]
-
-        try:
-            text_embs = self.clip_model.encode_text(prompted)
-        except Exception as e:
-            safe_print(f"[RENAME] Text encode failed: {e}")
-            return ""
-
-        sims = text_embs @ group_emb
-        best_idx = int(np.argmax(sims))
-        safe_print(
-            f"[RENAME] '{category_name}' → '{labels[best_idx]}' "
-            f"(score {sims[best_idx]:.3f}, margin over mean "
-            f"{sims[best_idx] - float(sims.mean()):.3f}), group size={len(idxs)}"
-        )
-        return labels[best_idx]
+        best_label, _margin = self._score_single_category(group_emb, category_name, labels)
+        return best_label
 
     def _auto_name_composite(self, file_paths):
         """Score every built-in (and custom) category and combine the confident
-        winners into a descriptive multi-word name.
+        winners into a descriptive multi-word name such as "Beach Midday Purple Bikini".
 
-        For each category the 'margin' (top score − category mean) is used to
-        decide whether there is a clear visual match.  The top 3 categories by
-        margin are combined, in order of confidence.
-
-        Returns a space-joined string such as "Beach Midday Swimwear", or just
-        the single best label if only one category is confident.
+        Uses the margin (top score − category mean) to filter out categories
+        where no label clearly stands out.  The top 3 confident categories are
+        combined in confidence order.
         """
         if self.clip_model is None or self.image_embeddings is None:
             return ""
@@ -6125,41 +6163,27 @@ class ImageSearchApp(QMainWindow):
             return ""
         group_emb, _idxs = result
 
-        # Merge built-in and custom categories
         all_cats = dict(RENAME_CATEGORIES)
         saved = _load_app_settings().get("rename_custom_categories", {})
         all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
 
-        scored = []   # (margin, category_name, best_label, best_score)
+        scored = []   # (margin, cat_name, best_label)
         for cat_name, labels in all_cats.items():
             if not labels:
                 continue
-            template = CATEGORY_PROMPTS.get(cat_name, _DEFAULT_PROMPT)
-            prompted = [template(lbl) for lbl in labels]
-            try:
-                text_embs = self.clip_model.encode_text(prompted)
-            except Exception:
-                continue
-            sims = text_embs @ group_emb
-            best_idx = int(np.argmax(sims))
-            best_score = float(sims[best_idx])
-            margin = best_score - float(sims.mean())
-            scored.append((margin, cat_name, labels[best_idx], best_score))
+            best_label, margin = self._score_single_category(group_emb, cat_name, labels)
+            if best_label:
+                scored.append((margin, cat_name, best_label))
 
         if not scored:
             return ""
 
         scored.sort(reverse=True)
-        safe_print("[RENAME] Composite scores: " +
-                   ", ".join(f"{cat}={lbl}(score={sc:.3f} margin={mg:.3f})"
-                             for mg, cat, lbl, sc in scored))
 
-        # Include categories where the top label clearly beats the field.
-        # A margin of ≥ 0.02 means the winner is noticeably more relevant.
         MARGIN_THRESHOLD = 0.02
-        parts = [lbl for mg, _cat, lbl, _sc in scored[:3] if mg >= MARGIN_THRESHOLD]
+        parts = [lbl for mg, _cat, lbl in scored[:3] if mg >= MARGIN_THRESHOLD]
         if not parts:
-            parts = [scored[0][2]]  # always return at least one word
+            parts = [scored[0][2]]
 
         return " ".join(parts)
 
