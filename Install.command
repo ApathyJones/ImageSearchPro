@@ -52,46 +52,45 @@ if ! brew list libraw &>/dev/null 2>&1; then
 fi
 
 # ── 4. Find a compatible Python (3.12, 3.11, or 3.10) ───────────────────────
-# On Apple Silicon, prefer ARM64 Pythons and skip any x86_64 ones.
+# On Apple Silicon, skip any x86_64 Python — torch 2.6+ needs native ARM64.
 PYTHON=""
-NEED_ARM64=$([[ "$(uname -m)" == "arm64" ]] && echo "yes" || echo "no")
+SYS_ARCH="$(uname -m)"
 
-_is_good_python() {
-    local candidate="$1"
-    command -v "$candidate" &>/dev/null || return 1
-    local full_path
-    full_path=$(command -v "$candidate")
-    local ver
-    ver=$("$full_path" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")')
-    [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" ]] || return 1
-    if [[ "$NEED_ARM64" == "yes" ]]; then
-        local arch
-        arch=$("$full_path" -c "import platform; print(platform.machine())")
-        [[ "$arch" == "arm64" ]] || return 1
-    fi
-    echo "$full_path"
-}
-
-# Build candidate list: Miniconda/Mambaforge ARM paths + versioned names + plain python3
-CONDA_BASE="${CONDA_PREFIX:-${HOME}/miniconda3}"
 for candidate in \
-    "${CONDA_BASE}/bin/python3.12" \
-    "${CONDA_BASE}/bin/python3.11" \
-    "${CONDA_BASE}/bin/python3.10" \
-    "${CONDA_BASE}/bin/python3" \
+    "${HOME}/miniconda3/bin/python3" \
+    "${HOME}/miniconda3/bin/python3.13" \
+    "${HOME}/miniconda3/bin/python3.12" \
+    "${HOME}/miniforge3/bin/python3" \
     "${HOME}/mambaforge/bin/python3" \
+    /opt/homebrew/bin/python3.13 \
     /opt/homebrew/bin/python3.12 \
     /opt/homebrew/bin/python3.11 \
     /opt/homebrew/bin/python3.10 \
-    python3.12 python3.11 python3.10 python3
+    python3.13 \
+    python3.12 \
+    python3.11 \
+    python3.10 \
+    python3
 do
-    result=$(_is_good_python "$candidate" 2>/dev/null) && PYTHON="$result" && break
+    [[ -z "$candidate" ]] && continue
+    [[ -x "$candidate" ]] || continue
+
+    ver=$("$candidate" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")' 2>/dev/null) || continue
+    [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]] || continue
+
+    if [[ "$SYS_ARCH" == "arm64" ]]; then
+        arch=$("$candidate" -c "import platform; print(platform.machine())" 2>/dev/null) || continue
+        [[ "$arch" == "arm64" ]] || continue
+    fi
+
+    PYTHON="$candidate"
+    break
 done
 
 if [[ -z "$PYTHON" ]]; then
-    echo -e "${YELLOW}No compatible ARM64 Python 3.10–3.12 found. Installing Python 3.12 via Homebrew...${RESET}"
+    echo -e "${YELLOW}No compatible ARM64 Python 3.10–3.13 found. Installing Python 3.13 via Homebrew...${RESET}"
     brew install python@3.12
-    PYTHON=/opt/homebrew/bin/python3.12
+    PYTHON=/opt/homebrew/bin/python3.13
     echo ""
 fi
 
