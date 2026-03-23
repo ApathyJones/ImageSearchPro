@@ -52,37 +52,18 @@ if ! brew list libraw &>/dev/null 2>&1; then
 fi
 
 # ── 4. Find a compatible Python (3.12, 3.11, or 3.10) ───────────────────────
-# On Apple Silicon we must use a native arm64 Python — Conda base environments
-# are often x86_64 (Rosetta) and would cap torch at 2.2.x.
-# Search Homebrew's prefix directly first, before falling back to PATH.
 PYTHON=""
-BREW_PREFIX=""
-if [[ "$(uname -m)" == "arm64" ]] && [[ -x /opt/homebrew/bin/brew ]]; then
-    BREW_PREFIX=/opt/homebrew
-elif [[ -x /usr/local/bin/brew ]]; then
-    BREW_PREFIX=/usr/local
-fi
 
-for ver in 3.12 3.11 3.10; do
-    # Prefer the Homebrew-managed Python directly (guaranteed native arch)
-    if [[ -n "$BREW_PREFIX" ]] && [[ -x "$BREW_PREFIX/bin/python${ver}" ]]; then
-        PYTHON="$BREW_PREFIX/bin/python${ver}"
-        break
-    fi
-    # Fall back to whatever is on PATH
-    if command -v "python${ver}" &>/dev/null; then
-        PYTHON="python${ver}"
-        break
+# Try versioned names first, then plain python3
+for candidate in python3.12 python3.11 python3.10 python3; do
+    if command -v "$candidate" &>/dev/null; then
+        ver=$("$candidate" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")')
+        if [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" ]]; then
+            PYTHON="$candidate"
+            break
+        fi
     fi
 done
-
-# Last resort: python3 on PATH
-if [[ -z "$PYTHON" ]] && command -v python3 &>/dev/null; then
-    py3_ver=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-    if [[ "$py3_ver" == "3.10" || "$py3_ver" == "3.11" || "$py3_ver" == "3.12" ]]; then
-        PYTHON="python3"
-    fi
-fi
 
 if [[ -z "$PYTHON" ]]; then
     echo -e "${YELLOW}Python 3.10–3.12 not found. Installing Python 3.12 via Homebrew...${RESET}"
