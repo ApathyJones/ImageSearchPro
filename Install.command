@@ -111,8 +111,18 @@ echo -e "${GREEN}Using Python: $("$PYTHON" --version)  [$PY_ARCH]  ($PYTHON)${RE
 echo ""
 
 # ── 5. Create virtual environment ────────────────────────────────────────────
-if [[ ! -d "venv" ]]; then
-    echo -e "${BOLD}Creating virtual environment...${RESET}"
+# Also recreate if venv exists but is broken (e.g. folder was renamed/moved).
+VENV_OK=0
+if [[ -f "venv/bin/python" ]] && venv/bin/python -c "" &>/dev/null; then
+    VENV_OK=1
+fi
+if [[ "$VENV_OK" == "0" ]]; then
+    if [[ -d "venv" ]]; then
+        echo -e "${YELLOW}Existing venv is broken (folder was likely renamed or moved). Recreating...${RESET}"
+        rm -rf venv
+    else
+        echo -e "${BOLD}Creating virtual environment...${RESET}"
+    fi
     "$PYTHON" -m venv venv
     echo ""
 fi

@@ -9,9 +9,8 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
     exit 1
 fi
 
-if [[ ! -d "venv" ]]; then
-    echo "Virtual environment not found."
-    echo "Please run Install.command first."
+if [[ ! -f "venv/bin/python" ]] || ! venv/bin/python -c "" &>/dev/null; then
+    echo "Venv not found or broken (was the folder renamed?). Run Install.command to fix it."
     echo ""
     echo "Press any key to exit."
     read -r -n 1
