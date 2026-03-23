@@ -1,0 +1,13 @@
+#!/bin/bash
+# Launcher for PhotoSearchPro.app
+# The .app lives inside the project folder, so navigate up three levels to reach it.
+APP_DIR="$(cd "$(dirname "$0")/../../.." && pwd)"
+
+if [[ ! -d "$APP_DIR/venv" ]]; then
+    osascript -e 'display alert "PhotoSearchPro" message "Virtual environment not found.\nPlease run Install.command first."'
+    exit 1
+fi
+
+source "$APP_DIR/venv/bin/activate"
+cd "$APP_DIR"
+exec python PhotoSearchPro.py
