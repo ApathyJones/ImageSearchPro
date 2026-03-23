@@ -18,7 +18,8 @@ torchvision==0.17.2
 open_clip_torch==3.2.0
 transformers>=4.56
 huggingface_hub>=0.24
-dinotool
+# dinotool  # Requires torch>=2.6; not available on Intel Mac (torch peaks at 2.2.x for x86_64)
+            # Apple Silicon users can install manually: pip install dinotool
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 psutil>=5.9
