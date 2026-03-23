@@ -42,7 +42,8 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QMenu, QDialog, QTabWidget, QProgressBar,
     QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
-    QInputDialog, QComboBox, QGroupBox, QRadioButton, QPlainTextEdit)
+    QInputDialog, QComboBox, QGroupBox, QRadioButton, QPlainTextEdit,
+    QDoubleSpinBox)
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon,
     QPalette, QColor)
@@ -509,6 +510,18 @@ def _make_panel(parent=None, bottom_border=False):
         f"QLabel {{ color: {FG}; background: transparent; border: none; }}"
         f"QCheckBox {{ background: transparent; border: none; }}")
     return f
+
+def _dark_title(widget):
+    """Apply Windows dark title bar to any QWidget/QDialog (no-op on other platforms)."""
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        hwnd = int(widget.winId())
+        v = ctypes.c_int(1)
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), ctypes.sizeof(v))
+    except Exception:
+        pass
 
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
@@ -7677,8 +7690,8 @@ class ImageSearchApp(QMainWindow):
         default_clusters = min(15, max(3, n_images // 100))
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Smart Albums - Auto-Collections")
-        dlg.setFixedSize(420, 230)
+        dlg.setWindowTitle("Smart Albums")
+        dlg.setFixedSize(440, 300)
         dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -7690,7 +7703,7 @@ class ImageSearchApp(QMainWindow):
         hdr_lay.addWidget(QLabel(
             "<b>Smart Albums</b> — AI-based auto-collections<br>"
             f"<span style='font-size:8pt;color:{FG_MUTED};'>"
-            "Groups images by visual similarity using K-Means clustering.</span>"))
+            "Groups images by visual similarity.</span>"))
         layout.addWidget(hdr)
 
         body = QWidget()
@@ -7698,28 +7711,75 @@ class ImageSearchApp(QMainWindow):
         body_lay.setContentsMargins(14, 12, 14, 12)
         body_lay.setSpacing(10)
 
-        spin_row = QHBoxLayout()
-        spin_lbl = QLabel("Number of albums:")
+        # ── Auto toggle ───────────────────────────────────────────────────────
+        auto_cb = QCheckBox("Auto — detect duplicate groups and set album count automatically")
+        body_lay.addWidget(auto_cb)
+
+        # Threshold row (shown in Auto mode)
+        thresh_widget = QWidget()
+        thresh_row = QHBoxLayout(thresh_widget)
+        thresh_row.setContentsMargins(0, 0, 0, 0)
+        thresh_lbl = QLabel("Similarity threshold:")
+        thresh_lbl.setStyleSheet(f"color: {FG};")
+        thresh_spin = QDoubleSpinBox()
+        thresh_spin.setRange(0.70, 0.99)
+        thresh_spin.setSingleStep(0.01)
+        thresh_spin.setDecimals(2)
+        thresh_spin.setValue(0.90)
+        thresh_spin.setFixedWidth(65)
+        thresh_hint = QLabel("(higher = stricter)")
+        thresh_hint.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        thresh_row.addWidget(thresh_lbl)
+        thresh_row.addWidget(thresh_spin)
+        thresh_row.addWidget(thresh_hint)
+        thresh_row.addStretch()
+        thresh_widget.setVisible(False)
+        body_lay.addWidget(thresh_widget)
+
+        # Manual spinner row (shown in Manual mode)
+        spin_widget = QWidget()
+        spin_row = QHBoxLayout(spin_widget)
+        spin_row.setContentsMargins(0, 0, 0, 0)
+        spin_lbl = QLabel("Number of Albums:")
         spin_lbl.setStyleSheet(f"color: {FG};")
-        spin_row.addWidget(spin_lbl)
         n_clusters_spin = QSpinBox()
         n_clusters_spin.setRange(2, 50)
         n_clusters_spin.setValue(default_clusters)
+        spin_row.addWidget(spin_lbl)
         spin_row.addWidget(n_clusters_spin)
         spin_row.addStretch()
-        body_lay.addLayout(spin_row)
+        body_lay.addWidget(spin_widget)
 
         count_lbl = QLabel(f"{n_images:,} images will be clustered")
         count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
         body_lay.addWidget(count_lbl)
         layout.addWidget(body, stretch=1)
 
+        def on_auto_toggled(checked):
+            spin_widget.setVisible(not checked)
+            thresh_widget.setVisible(checked)
+            count_lbl.setText(
+                f"{n_images:,} images — unique images go to 'No Duplicates Found'"
+                if checked else
+                f"{n_images:,} images will be clustered into K-Means albums"
+            )
+
+        auto_cb.toggled.connect(on_auto_toggled)
+
         def start_clustering():
-            n_clusters = n_clusters_spin.value()
             dlg.accept()
-            self.update_status(f"Building {n_clusters} smart albums...", "orange")
-            self.progress.setRange(0, 0)
-            Thread(target=lambda: self._smart_albums_worker(n_clusters), daemon=True).start()
+            if auto_cb.isChecked():
+                threshold = thresh_spin.value()
+                self.update_status("Auto Smart Albums: scanning for duplicate groups...", "orange")
+                self.progress.setRange(0, 0)
+                self.progress_label.setText("Scanning for duplicate groups...")
+                Thread(target=lambda: self._smart_albums_auto_worker(threshold), daemon=True).start()
+            else:
+                n_clusters = n_clusters_spin.value()
+                self.update_status(f"Building {n_clusters} Smart Albums...", "orange")
+                self.progress.setRange(0, 0)
+                self.progress_label.setText(f"Building {n_clusters} albums...")
+                Thread(target=lambda: self._smart_albums_worker(n_clusters), daemon=True).start()
 
         footer = _make_panel()
         foot_lay = QHBoxLayout(footer)
@@ -7735,6 +7795,8 @@ class ImageSearchApp(QMainWindow):
         foot_lay.addWidget(build_btn)
         foot_lay.addWidget(cancel_btn)
         layout.addWidget(footer)
+
+        _dark_title(dlg)
         dlg.exec()
 
     def _smart_albums_worker(self, n_clusters):
@@ -7790,10 +7852,114 @@ class ImageSearchApp(QMainWindow):
             self._safe_after(0, lambda: self.progress.setValue(0))
             self._safe_after(0, lambda: self.update_status("Smart Albums failed", "red"))
 
+    def _smart_albums_auto_worker(self, threshold=0.90):
+        """Auto Smart Albums: group near-duplicates via union-find; singletons go to own album."""
+        try:
+            embeddings = self.image_embeddings
+            n = len(self.image_paths)
+            safe_print(f"[ALBUMS] Auto scan: {n:,} images, threshold={threshold:.2f}...")
+
+            # Union-find structures
+            parent = list(range(n))
+
+            def find(x):
+                while parent[x] != x:
+                    parent[x] = parent[parent[x]]
+                    x = parent[x]
+                return x
+
+            def union(x, y):
+                px, py = find(x), find(y)
+                if px != py:
+                    parent[px] = py
+
+            chunk_size = 500
+            total_chunks = (n + chunk_size - 1) // chunk_size
+
+            for chunk_idx in range(total_chunks):
+                start = chunk_idx * chunk_size
+                end = min(start + chunk_size, n)
+                chunk = embeddings[start:end]
+                sims = chunk @ embeddings.T
+                rows, cols = np.where(sims >= threshold)
+                for r, c in zip(rows.tolist(), cols.tolist()):
+                    actual_r = start + r
+                    if actual_r < c:
+                        union(actual_r, c)
+
+                pct = int((chunk_idx + 1) / total_chunks * 100)
+                self._safe_after(0, lambda p=pct: self.update_progress(
+                    p, f"Scanning for duplicate groups: {p}%"))
+
+            # Collect groups
+            groups: dict = {}
+            for i in range(n):
+                groups.setdefault(find(i), []).append(i)
+
+            dup_groups = sorted(
+                [sorted(v) for v in groups.values() if len(v) >= 2],
+                key=len, reverse=True)
+            singleton_indices = [v[0] for v in groups.values() if len(v) == 1]
+
+            safe_print(f"[ALBUMS] Auto: {len(dup_groups)} groups, "
+                       f"{len(singleton_indices)} singletons")
+
+            # Build cluster_info: each duplicate group becomes an album
+            cluster_info = []
+            for members in dup_groups:
+                member_embs = embeddings[members]
+                # representative = highest average cosine similarity to group
+                avg_sims = (member_embs @ member_embs.T).mean(axis=1)
+                best_idx = members[int(np.argmax(avg_sims))]
+                cluster_info.append({
+                    "cluster_id": len(cluster_info),
+                    "members": members,
+                    "representative": best_idx,
+                    "size": len(members),
+                })
+
+            # Append No-Duplicates-Found album last (if any singletons exist)
+            if singleton_indices:
+                cluster_info.append({
+                    "cluster_id": -1,
+                    "members": singleton_indices,
+                    "representative": singleton_indices[0],
+                    "size": len(singleton_indices),
+                    "no_dup_label": True,
+                })
+
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+
+            if not dup_groups:
+                self._safe_after(0, lambda: self.update_status(
+                    f"No duplicate groups found — all {n:,} images are unique", "green"))
+                self._safe_after(0, lambda: QMessageBox.information(
+                    self, "No Groups Found",
+                    f"No duplicate groups found at threshold {threshold:.2f}.\n\n"
+                    f"All {n:,} images appear to be visually unique.\n"
+                    "Try lowering the threshold for looser matching, or use Manual mode."))
+                return
+
+            n_dup = len(dup_groups)
+            n_sing = len(singleton_indices)
+            self._safe_after(0, lambda: self.update_status(
+                f"Auto: {n_dup} duplicate groups, {n_sing} unique images", "green"))
+            self._safe_after(0, lambda ci=cluster_info: self.open_smart_albums_dialog(ci))
+
+        except Exception as e:
+            safe_print(f"[ALBUMS] Auto error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.update_status("Smart Albums failed", "red"))
+
     def open_smart_albums_dialog(self, cluster_info):
         """Display smart albums as a grid of representative thumbnails."""
+        n_regular = sum(1 for c in cluster_info if not c.get("no_dup_label"))
         dlg = QDialog(self)
-        dlg.setWindowTitle(f"Smart Albums - {len(cluster_info)} Auto-Collections")
+        dlg.setWindowTitle(f"Smart Albums — {n_regular} Album{'s' if n_regular != 1 else ''}")
         dlg.resize(920, 660)
         dlg.setStyleSheet(_dlg_stylesheet())
         layout = QVBoxLayout(dlg)
@@ -7803,9 +7969,11 @@ class ImageSearchApp(QMainWindow):
         hdr = _make_panel(bottom_border=True)
         hdr_lay = QVBoxLayout(hdr)
         hdr_lay.setContentsMargins(14, 10, 14, 10)
+        has_no_dup = any(c.get("no_dup_label") for c in cluster_info)
         info_lbl = QLabel(
-            f"<b>{len(cluster_info)} Smart Albums</b> — AI-generated collections based on visual similarity."
-            "  Click <i>View Album</i> to browse a collection.")
+            f"<b>{n_regular} Smart Album{'s' if n_regular != 1 else ''}</b>"
+            + (" + No Duplicates Found" if has_no_dup else "")
+            + " — Click <i>View Album</i> to browse a collection.")
         info_lbl.setWordWrap(True)
         hdr_lay.addWidget(info_lbl)
         layout.addWidget(hdr)
@@ -7866,15 +8034,21 @@ class ImageSearchApp(QMainWindow):
                 no_prev.setStyleSheet(f"color: {FG_MUTED};")
                 card_layout.addWidget(no_prev)
 
-            alb_title = QLabel(f"Album {idx + 1}")
-            alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
+            is_no_dup = info.get("no_dup_label", False)
+            album_num = idx + 1
+            if is_no_dup:
+                alb_title = QLabel("No Duplicates Found")
+                alb_title.setStyleSheet(f"color: {ORANGE}; font-weight: bold; font-size: 9pt;")
+            else:
+                alb_title = QLabel(f"Album {album_num}")
+                alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
             card_layout.addWidget(alb_title)
 
             size_lbl = QLabel(f"{info['size']:,} images")
             size_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
             card_layout.addWidget(size_lbl)
 
-            def view_album(members=info["members"], album_num=idx + 1):
+            def view_album(members=info["members"], num=album_num, no_dup=is_no_dup):
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, self.image_paths[i], "image", {})
@@ -7883,7 +8057,8 @@ class ImageSearchApp(QMainWindow):
                 self.all_search_results = album_results
                 self.total_found = len(album_results)
                 self.show_more_offset = 0
-                self.update_status(f"Smart Album {album_num}: {len(album_results)} images", "green")
+                label = "No Duplicates Found" if no_dup else f"Smart Album {num}"
+                self.update_status(f"{label}: {len(album_results)} images", "green")
                 vp_width = self.scroll_area.viewport().width()
                 cw = max(vp_width, CELL_WIDTH)
                 self.render_cols = max(1, cw // CELL_WIDTH)
@@ -7894,10 +8069,10 @@ class ImageSearchApp(QMainWindow):
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
 
-            def rename_album(members=info["members"], album_num=idx + 1):
+            def rename_album(members=info["members"], num=album_num, no_dup=is_no_dup):
                 paths = [self.image_paths[i] for i in members]
-                rename_dlg = BatchRenameDialog(
-                    dlg, paths, suggested=f"Album_{album_num}", app=self)
+                suggested = "No_Duplicates_Found" if no_dup else f"Album_{num}"
+                rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self)
                 rename_dlg.exec()
 
             view_btn = QPushButton("View Album")
@@ -7914,7 +8089,7 @@ class ImageSearchApp(QMainWindow):
         albums_footer = _make_panel()
         alb_foot_lay = QHBoxLayout(albums_footer)
         alb_foot_lay.setContentsMargins(12, 8, 12, 8)
-        tip_lbl = QLabel("Tip: Rebuild with more or fewer albums to change granularity.")
+        tip_lbl = QLabel("Tip: Use Manual mode to rebuild with a different album count.")
         tip_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
         alb_foot_lay.addWidget(tip_lbl)
         alb_foot_lay.addStretch()
@@ -7923,6 +8098,8 @@ class ImageSearchApp(QMainWindow):
         close_btn.clicked.connect(dlg.accept)
         alb_foot_lay.addWidget(close_btn)
         layout.addWidget(albums_footer)
+
+        _dark_title(dlg)
         dlg.exec()
 
 
