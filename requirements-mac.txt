@@ -7,7 +7,7 @@ PyQt6>=6.5.0
 # ── Core numerics & image I/O ─────────────────────────────────────────────────
 Pillow==12.0.0
 numpy==2.2.6
-rawpy==0.26.1
+rawpy==0.25.1
 opencv-python==4.13.0.92
 
 # ── PyTorch (Apple MPS / CPU — standard wheel includes MPS since PyTorch 2.0) ─
