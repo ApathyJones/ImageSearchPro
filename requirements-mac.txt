@@ -11,8 +11,8 @@ rawpy==0.25.1
 opencv-python==4.13.0.92
 
 # ── PyTorch (Apple MPS / CPU — standard wheel includes MPS since PyTorch 2.0) ─
-torch==2.10.0
-torchvision==0.25.0
+torch==2.2.2
+torchvision==0.17.2
 
 # ── Vision models ─────────────────────────────────────────────────────────────
 open_clip_torch==3.2.0
