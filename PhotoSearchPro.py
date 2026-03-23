@@ -3345,8 +3345,12 @@ class ImageSearchApp(QMainWindow):
         self.model_loading = True
         cfg = MODEL_REGISTRY[self.active_model_key]
         self._safe_after(0, lambda: self.update_status(f"Loading {cfg['label']}...", "orange"))
+        self._safe_after(0, lambda: self.progress.setRange(0, 0))
+        self._safe_after(0, lambda l=cfg['label']: self.progress_label.setText(f"Loading {l}..."))
         try:
             self.clip_model = create_model(self.active_model_key)
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
             self._safe_after(0, lambda: self.update_status("Ready", "green"))
             # Update model button label now that we know the real device
             self._safe_after(0, lambda: self.btn_model.setText(
@@ -3368,6 +3372,8 @@ class ImageSearchApp(QMainWindow):
         except Exception as e:
             safe_print(f"[ERROR] {e}")
             err_msg = str(e)
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
             # Detect CUDA DLL init failure (WinError 1114) and give actionable guidance
             if "1114" in err_msg or "DLL" in err_msg or "c10" in err_msg:
                 hint = (
@@ -7136,8 +7142,8 @@ class ImageSearchApp(QMainWindow):
 
                     pct = int((chunk_idx + 1) / total_chunks * 100)
                     t = current_threshold
-                    self._safe_after(0, lambda p=pct, th=t: self.progress_label.setText(
-                        f"Scanning for duplicates (threshold={th:.3f})... {p}%"))
+                    self._safe_after(0, lambda p=pct, th=t: self.update_progress(
+                        p, f"Scanning duplicates (threshold={th:.3f}): {p}%"))
 
                 # Rebuild parent after loop (find() mutates parent in-place via path compression)
                 groups = {}
@@ -7183,6 +7189,8 @@ class ImageSearchApp(QMainWindow):
             # Pre-load PIL images in this background thread so the main thread
             # doesn't block on disk I/O when building the dialog.
             safe_print(f"[DUPES] Pre-loading thumbnails for dialog...")
+            total_thumbs = sum(len(g) for g in dup_groups)
+            loaded = 0
             group_data = []
             for group in dup_groups:
                 members = []
@@ -7203,6 +7211,11 @@ class ImageSearchApp(QMainWindow):
                     except Exception:
                         pil_img = None
                     members.append((abs_path, abs_path, pil_img))
+                    loaded += 1
+                    if loaded % 5 == 0 or loaded == total_thumbs:
+                        pct = int(loaded / total_thumbs * 100)
+                        self._safe_after(0, lambda p=pct, l=loaded, t=total_thumbs:
+                            self.update_progress(p, f"Loading thumbnails: {l:,}/{t:,}"))
                 group_data.append(members)
 
             total_redundant = sum(len(g) - 1 for g in dup_groups)
