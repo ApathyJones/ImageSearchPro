@@ -58,12 +58,15 @@ SYS_ARCH="$(uname -m)"
 
 for candidate in \
     "${HOME}/miniconda3/bin/python3" \
+    "${HOME}/miniconda3/bin/python3.13" \
     "${HOME}/miniconda3/bin/python3.12" \
     "${HOME}/miniforge3/bin/python3" \
     "${HOME}/mambaforge/bin/python3" \
+    /opt/homebrew/bin/python3.13 \
     /opt/homebrew/bin/python3.12 \
     /opt/homebrew/bin/python3.11 \
     /opt/homebrew/bin/python3.10 \
+    python3.13 \
     python3.12 \
     python3.11 \
     python3.10 \
@@ -73,7 +76,7 @@ do
     [[ -x "$candidate" ]] || continue
 
     ver=$("$candidate" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")' 2>/dev/null) || continue
-    [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" ]] || continue
+    [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" || "$ver" == "3.13" ]] || continue
 
     if [[ "$SYS_ARCH" == "arm64" ]]; then
         arch=$("$candidate" -c "import platform; print(platform.machine())" 2>/dev/null) || continue
@@ -85,9 +88,9 @@ do
 done
 
 if [[ -z "$PYTHON" ]]; then
-    echo -e "${YELLOW}No compatible ARM64 Python 3.10–3.12 found. Installing Python 3.12 via Homebrew...${RESET}"
+    echo -e "${YELLOW}No compatible ARM64 Python 3.10–3.13 found. Installing Python 3.13 via Homebrew...${RESET}"
     brew install python@3.12
-    PYTHON=/opt/homebrew/bin/python3.12
+    PYTHON=/opt/homebrew/bin/python3.13
     echo ""
 fi
 
