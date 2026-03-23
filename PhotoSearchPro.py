@@ -976,8 +976,20 @@ def _detect_device():
                 device = torch.device("cpu")
         else:
             device = torch.device("cpu")
-    except Exception:
+    except Exception as cuda_err:
+        safe_print(f"[MODEL] CUDA initialisation error: {cuda_err}")
         device = torch.device("cpu")
+
+    # Warn when a GPU was detected via nvidia-smi/sysfs but PyTorch CUDA is unavailable.
+    # This almost always means a CPU-only PyTorch wheel is installed.
+    if device_name == "CPU" and _VRAM_BYTES is not None and not sys.platform.startswith("darwin"):
+        safe_print(
+            f"[MODEL] WARNING: A GPU with {_VRAM_BYTES / 1024**3:.1f} GB VRAM was detected "
+            f"but PyTorch CUDA is unavailable."
+        )
+        safe_print("[MODEL]   This usually means a CPU-only PyTorch wheel is installed.")
+        safe_print("[MODEL]   Reinstall with CUDA support, e.g.:")
+        safe_print("[MODEL]     pip install torch --index-url https://download.pytorch.org/whl/cu124")
 
     # Detect best AMP dtype
     amp_dtype = None
