@@ -94,10 +94,10 @@ fi
 PY_ARCH=$("$PYTHON" -c "import platform; print(platform.machine())")
 echo -e "${GREEN}Using Python: $($PYTHON --version)  [$PY_ARCH]${RESET}"
 if [[ "$(uname -m)" == "arm64" ]] && [[ "$PY_ARCH" != "arm64" ]]; then
-    echo -e "${RED}ERROR: This Mac is Apple Silicon but the selected Python is ${PY_ARCH} (Rosetta).${RESET}"
-    echo -e "${RED}       Install a native ARM64 Python via Homebrew: brew install python@3.12${RESET}"
-    echo -e "${RED}       Then delete the 'venv' folder and re-run Install.command.${RESET}"
-    exit 1
+    echo -e "${YELLOW}NOTE: Using a Rosetta/x86_64 Python on Apple Silicon.${RESET}"
+    echo -e "${YELLOW}      The app will work, but DINOv2/v3 models will be unavailable${RESET}"
+    echo -e "${YELLOW}      (dinotool requires torch>=2.6, which needs native ARM64 Python).${RESET}"
+    echo ""
 fi
 echo ""
 
