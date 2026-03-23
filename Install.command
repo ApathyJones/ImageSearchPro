@@ -52,34 +52,51 @@ if ! brew list libraw &>/dev/null 2>&1; then
 fi
 
 # ── 4. Find a compatible Python (3.12, 3.11, or 3.10) ───────────────────────
+# On Apple Silicon, prefer ARM64 Pythons and skip any x86_64 ones.
 PYTHON=""
+NEED_ARM64=$([[ "$(uname -m)" == "arm64" ]] && echo "yes" || echo "no")
 
-# Try versioned names first, then plain python3
-for candidate in python3.12 python3.11 python3.10 python3; do
-    if command -v "$candidate" &>/dev/null; then
-        ver=$("$candidate" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")')
-        if [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" ]]; then
-            PYTHON="$candidate"
-            break
-        fi
+_is_good_python() {
+    local candidate="$1"
+    command -v "$candidate" &>/dev/null || return 1
+    local full_path
+    full_path=$(command -v "$candidate")
+    local ver
+    ver=$("$full_path" -c 'import sys; v=sys.version_info; print(f"{v.major}.{v.minor}")')
+    [[ "$ver" == "3.10" || "$ver" == "3.11" || "$ver" == "3.12" ]] || return 1
+    if [[ "$NEED_ARM64" == "yes" ]]; then
+        local arch
+        arch=$("$full_path" -c "import platform; print(platform.machine())")
+        [[ "$arch" == "arm64" ]] || return 1
     fi
+    echo "$full_path"
+}
+
+# Build candidate list: Miniconda/Mambaforge ARM paths + versioned names + plain python3
+CONDA_BASE="${CONDA_PREFIX:-${HOME}/miniconda3}"
+for candidate in \
+    "${CONDA_BASE}/bin/python3.12" \
+    "${CONDA_BASE}/bin/python3.11" \
+    "${CONDA_BASE}/bin/python3.10" \
+    "${CONDA_BASE}/bin/python3" \
+    "${HOME}/mambaforge/bin/python3" \
+    /opt/homebrew/bin/python3.12 \
+    /opt/homebrew/bin/python3.11 \
+    /opt/homebrew/bin/python3.10 \
+    python3.12 python3.11 python3.10 python3
+do
+    result=$(_is_good_python "$candidate" 2>/dev/null) && PYTHON="$result" && break
 done
 
 if [[ -z "$PYTHON" ]]; then
-    echo -e "${YELLOW}Python 3.10–3.12 not found. Installing Python 3.12 via Homebrew...${RESET}"
+    echo -e "${YELLOW}No compatible ARM64 Python 3.10–3.12 found. Installing Python 3.12 via Homebrew...${RESET}"
     brew install python@3.12
-    PYTHON="python3.12"
+    PYTHON=/opt/homebrew/bin/python3.12
     echo ""
 fi
 
 PY_ARCH=$("$PYTHON" -c "import platform; print(platform.machine())")
-echo -e "${GREEN}Using Python: $($PYTHON --version)  [$PY_ARCH]${RESET}"
-if [[ "$(uname -m)" == "arm64" ]] && [[ "$PY_ARCH" != "arm64" ]]; then
-    echo -e "${YELLOW}NOTE: Using a Rosetta/x86_64 Python on Apple Silicon.${RESET}"
-    echo -e "${YELLOW}      The app will work, but DINOv2/v3 models will be unavailable${RESET}"
-    echo -e "${YELLOW}      (dinotool requires torch>=2.6, which needs native ARM64 Python).${RESET}"
-    echo ""
-fi
+echo -e "${GREEN}Using Python: $("$PYTHON" --version)  [$PY_ARCH]  ($PYTHON)${RESET}"
 echo ""
 
 # ── 5. Create virtual environment ────────────────────────────────────────────
