@@ -5,6 +5,18 @@
 
 set -euo pipefail
 
+# ── 0. macOS-only guard ───────────────────────────────────────────────────────
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo ""
+    echo "ERROR: Install.command is for macOS only."
+    echo ""
+    echo "On Linux with an NVIDIA GPU, use requirements.txt instead:"
+    echo "  pip install -r requirements.txt"
+    echo "  python PhotoSearchPro.py"
+    echo ""
+    exit 1
+fi
+
 # ── 1. Change to script's own directory ─────────────────────────────────────
 cd "$(dirname "$0")"
 

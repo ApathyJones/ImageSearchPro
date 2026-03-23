@@ -4,6 +4,11 @@
 
 cd "$(dirname "$0")"
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "ERROR: Update.command is for macOS only. On Linux, run: git pull && pip install -r requirements.txt"
+    exit 1
+fi
+
 BOLD='\033[1m'
 GREEN='\033[0;32m'
 RESET='\033[0m'

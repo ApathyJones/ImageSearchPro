@@ -4,6 +4,11 @@
 
 cd "$(dirname "$0")"
 
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo "ERROR: Run.command is for macOS only. On Linux, run: python PhotoSearchPro.py"
+    exit 1
+fi
+
 if [[ ! -d "venv" ]]; then
     echo "Virtual environment not found."
     echo "Please run Install.command first."
