@@ -12,14 +12,18 @@ rawpy==0.25.1
 opencv-python==4.13.0.92
 
 # ── PyTorch (Apple MPS / CPU — standard wheel includes MPS since PyTorch 2.0) ─
-torch>=2.6.0
-torchvision>=0.21.0
+# NOTE: torch 2.6+ requires native ARM64 Python (arm64 wheel).
+#       Rosetta/Intel Python is capped at torch 2.2.2.
+#       Check: python3 -c "import platform; print(platform.machine())"
+torch>=2.2.2
+torchvision>=0.17.2
 
 # ── Vision models ─────────────────────────────────────────────────────────────
 open_clip_torch==3.2.0
 transformers>=4.56
 huggingface_hub>=0.24
-dinotool
+# dinotool  # Requires torch>=2.6 → requires native ARM64 Python (not Rosetta/Intel)
+            # After switching to ARM64 Python: pip install dinotool
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 psutil>=5.9
