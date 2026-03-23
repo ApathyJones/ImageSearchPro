@@ -21,13 +21,21 @@ echo -e "${BOLD}================================================${RESET}"
 echo ""
 
 # ── 2. Check / install Homebrew ──────────────────────────────────────────────
+# Always add Homebrew to PATH — .command files launch with a minimal bash
+# environment that does not source ~/.zshrc, so /opt/homebrew/bin may be absent.
+if [[ "$(uname -m)" == "arm64" ]] && [[ -x /opt/homebrew/bin/brew ]]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [[ -x /usr/local/bin/brew ]]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
 if ! command -v brew &>/dev/null; then
     echo -e "${YELLOW}Homebrew not found. Installing Homebrew...${RESET}"
     echo "(This is required to install system libraries. It may take a few minutes.)"
     echo ""
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-    # Add brew to PATH for Apple Silicon (arm64)
+    # Re-initialise after fresh install
     if [[ "$(uname -m)" == "arm64" ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     else
