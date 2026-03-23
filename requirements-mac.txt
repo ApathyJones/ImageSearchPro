@@ -1,4 +1,5 @@
-# requirements-mac.txt — macOS (Apple Silicon & Intel)
+# requirements-mac.txt — macOS Apple Silicon (M1/M2/M3/M4)
+# Note: Intel Mac is capped at torch 2.2.x; PyTorch dropped x86_64 macOS wheels after 2.2.
 # For Windows/NVIDIA CUDA, use requirements.txt instead.
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
@@ -11,8 +12,8 @@ rawpy==0.25.1
 opencv-python==4.13.0.92
 
 # ── PyTorch (Apple MPS / CPU — standard wheel includes MPS since PyTorch 2.0) ─
-torch==2.2.2
-torchvision==0.17.2
+torch>=2.6.0
+torchvision>=0.21.0
 
 # ── Vision models ─────────────────────────────────────────────────────────────
 open_clip_torch==3.2.0
