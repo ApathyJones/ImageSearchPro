@@ -1,4 +1,4 @@
---extra-index-url https://download.pytorch.org/whl/cu121
+--extra-index-url https://download.pytorch.org/whl/cu128
 
 # ── GUI ───────────────────────────────────────────────────────────────────────
 PyQt6>=6.5.0
@@ -10,8 +10,8 @@ rawpy==0.25.1
 opencv-python==4.13.0.92
 
 # ── PyTorch (CUDA 12.8) ───────────────────────────────────────────────────────
-torch==2.2.2+cu121
-torchvision==0.17.2+cu121
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
 
 # ── Xformers (CUDA 12.8) ───────────────────────────────────────────────────────
 xformers
