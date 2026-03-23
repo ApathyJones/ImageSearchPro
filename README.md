@@ -28,6 +28,33 @@ AI-powered desktop app to search your image and video library using text descrip
 
 ---
 
+### macOS (Easy)
+
+1. Clone the repo:
+   ```bash
+   git clone https://github.com/ApathyJones/ImageSearchPro.git
+   cd ImageSearchPro
+   ```
+
+2. Make the scripts executable (one-time step):
+   ```bash
+   chmod +x *.command
+   ```
+
+3. Double-click `Install.command` in Finder — it will:
+   - Install Homebrew if missing
+   - Install `libraw` (needed for RAW photo support)
+   - Find or install a compatible Python (3.10–3.12)
+   - Create a virtual environment
+   - Install all Python dependencies
+   - Launch the app
+
+4. Use `Run.command` to launch in the future
+
+> On first run, macOS may block the script with a Gatekeeper warning. Right-click the file → **Open** → **Open** to allow it. This is only needed once per script.
+
+---
+
 ### Manual Installation
 
 **1. Clone the repo:**
@@ -58,9 +85,10 @@ source venv/bin/activate
 |-----|---------|
 | NVIDIA (RTX 20xx/30xx/40xx/50xx) | `pip install -r requirements.txt` |
 | NVIDIA (GTX 900 series or older) | See note below |
-| Apple Silicon (M1/M2/M3) | `pip install Pillow==12.0.0 numpy==2.2.6 open_clip_torch==3.2.0 rawpy==0.26.1 opencv-python==4.13.0.92 Send2Trash==2.1.0 tkinterdnd2 && pip install torch==2.10.0 torchvision==0.25.0` |
-| AMD GPU — Windows | Same as Apple Silicon, then `pip install torch-directml` |
-| CPU only | Same as Apple Silicon |
+| Apple Silicon (M1/M2/M3) | `pip install -r requirements-mac.txt` |
+| Intel Mac (no GPU) | `pip install -r requirements-mac.txt` |
+| AMD GPU — Windows | `pip install -r requirements-mac.txt` then `pip install torch-directml` |
+| CPU only | `pip install -r requirements-mac.txt` |
 
 > **Older NVIDIA GPUs (GTX 900 series and earlier):**
 > ```bash
@@ -104,7 +132,7 @@ Find images/videos that look similar to a reference image.
 - Click the **Image** button and pick a file
 - Or **drag and drop** any image directly onto the results area
 
-> Drag and drop requires `tkinterdnd2`. If it's not working: `pip install tkinterdnd2==0.4.3`
+> Drag and drop is built into the app via PyQt6 and requires no extra packages.
 
 ---
 
@@ -243,10 +271,20 @@ Then access Face Presets from the tools menu. Add a preset by providing a name a
 
 ## Updating
 
+**macOS:** Double-click `Update.command` — pulls the latest code and updates all dependencies automatically.
+
+**Windows:**
 ```bash
 git pull
 pip uninstall torch torchvision -y
 pip install -r requirements.txt
+```
+
+**macOS / Linux (manual):**
+```bash
+git pull
+source venv/bin/activate
+pip install -r requirements-mac.txt
 ```
 
 > Existing cache files are fully compatible — no re-indexing needed after an update.
