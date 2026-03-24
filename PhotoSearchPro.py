@@ -43,7 +43,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
     QInputDialog, QComboBox, QGroupBox, QRadioButton, QPlainTextEdit,
-    QDoubleSpinBox)
+    QDoubleSpinBox, QGraphicsDropShadowEffect)
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon,
     QPalette, QColor)
@@ -2102,19 +2102,60 @@ class ResultCard(QFrame):
         )
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 6)
-        layout.setSpacing(4)
+        layout.setSpacing(0)
+
+        # ── Image area with drop-shadow frame ──
+        img_frame = QFrame()
+        img_frame.setObjectName("imgFrame")
+        img_frame.setStyleSheet(
+            f"QFrame#imgFrame {{"
+            f"  background: rgba(6, 8, 12, 0.6);"
+            f"  border: 1px solid rgba(0, 0, 0, 0.3);"
+            f"  border-radius: 8px;"
+            f"  padding: 3px;"
+            f"}}"
+        )
+        img_frame_layout = QVBoxLayout(img_frame)
+        img_frame_layout.setContentsMargins(2, 2, 2, 2)
+        img_frame_layout.setSpacing(0)
 
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
-        layout.addWidget(self.img_label)
+        img_frame_layout.addWidget(self.img_label)
+
+        # Real drop shadow on the image frame
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        img_frame.setGraphicsEffect(shadow)
+
+        layout.addWidget(img_frame)
+
+        layout.addSpacing(4)
+
+        # ── Info footer — separated from image ──
+        info_footer = QFrame()
+        info_footer.setObjectName("infoFooter")
+        info_footer.setStyleSheet(
+            f"QFrame#infoFooter {{"
+            f"  background: rgba(10, 14, 20, 0.5);"
+            f"  border-top: 1px solid rgba(42, 52, 71, 0.6);"
+            f"  border-radius: 0 0 8px 8px;"
+            f"  padding: 2px 4px;"
+            f"}}"
+        )
+        info_footer_layout = QVBoxLayout(info_footer)
+        info_footer_layout.setContentsMargins(4, 3, 4, 2)
+        info_footer_layout.setSpacing(2)
 
         self.select_cb = QCheckBox("Select")
         self.select_cb.setStyleSheet(
             f"color: {FG_MUTED}; font-size: 8pt; background: transparent;"
             f"QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; }}"
         )
-        layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
+        info_footer_layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2123,7 +2164,9 @@ class ResultCard(QFrame):
             f"padding: 0 2px;"
         )
         self.info_label.setWordWrap(True)
-        layout.addWidget(self.info_label)
+        info_footer_layout.addWidget(self.info_label)
+
+        layout.addWidget(info_footer)
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -6273,8 +6316,12 @@ class ImageSearchApp(QMainWindow):
         
         if result_type == "video":
             badge = QLabel("VIDEO", card)
-            badge.setStyleSheet(f"background-color: {ORANGE}; color: #000000; font-size: 7px; font-weight: bold; padding: 1px 3px;")
-            badge.move(4, 4)
+            badge.setStyleSheet(
+                f"background-color: {ORANGE}; color: #000000;"
+                f"font-size: 7px; font-weight: bold;"
+                f"padding: 2px 5px; border-radius: 4px;"
+            )
+            badge.move(12, 12)
             badge.raise_()
         
         card.img_label.setPixmap(pixmap)
