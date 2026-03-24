@@ -2101,22 +2101,23 @@ class ResultCard(QFrame):
             f"}}"
         )
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 6)
+        layout.setContentsMargins(8, 8, 8, 0)
         layout.setSpacing(0)
 
-        # ── Image area with drop-shadow frame ──
+        # ── Image area with drop-shadow frame — fixed height ──
+        _IMG_AREA_H = CELL_HEIGHT - 80   # reserve 80px for the info footer
         img_frame = QFrame()
         img_frame.setObjectName("imgFrame")
+        img_frame.setFixedHeight(_IMG_AREA_H)
         img_frame.setStyleSheet(
             f"QFrame#imgFrame {{"
             f"  background: rgba(6, 8, 12, 0.6);"
             f"  border: 1px solid rgba(0, 0, 0, 0.3);"
             f"  border-radius: 8px;"
-            f"  padding: 3px;"
             f"}}"
         )
         img_frame_layout = QVBoxLayout(img_frame)
-        img_frame_layout.setContentsMargins(2, 2, 2, 2)
+        img_frame_layout.setContentsMargins(4, 4, 4, 4)
         img_frame_layout.setSpacing(0)
 
         self.img_label = QLabel()
@@ -2133,21 +2134,20 @@ class ResultCard(QFrame):
 
         layout.addWidget(img_frame)
 
-        layout.addSpacing(4)
-
-        # ── Info footer — separated from image ──
+        # ── Info footer — fixed at the bottom of the card ──
         info_footer = QFrame()
         info_footer.setObjectName("infoFooter")
+        info_footer.setFixedHeight(72)
         info_footer.setStyleSheet(
             f"QFrame#infoFooter {{"
             f"  background: rgba(10, 14, 20, 0.5);"
             f"  border-top: 1px solid rgba(42, 52, 71, 0.6);"
-            f"  border-radius: 0 0 8px 8px;"
-            f"  padding: 2px 4px;"
+            f"  border-bottom-left-radius: 12px;"
+            f"  border-bottom-right-radius: 12px;"
             f"}}"
         )
         info_footer_layout = QVBoxLayout(info_footer)
-        info_footer_layout.setContentsMargins(4, 3, 4, 2)
+        info_footer_layout.setContentsMargins(6, 4, 6, 4)
         info_footer_layout.setSpacing(2)
 
         self.select_cb = QCheckBox("Select")
