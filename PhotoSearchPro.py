@@ -2191,6 +2191,8 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     img_label = _ShadowImageLabel()
     img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     img_label.setStyleSheet("background: transparent; border: none;")
+    img_label.setSizePolicy(
+        QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
     if pixmap is not None:
         img_label.setPixmap(pixmap)
     img_frame_layout.addWidget(img_label)
@@ -2297,6 +2299,8 @@ class ResultCard(QFrame):
         self.img_label = _ShadowImageLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
+        self.img_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         img_frame_layout.addWidget(self.img_label)
 
         layout.addWidget(img_frame)
