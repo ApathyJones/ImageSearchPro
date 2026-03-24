@@ -8550,7 +8550,7 @@ class ImageSearchApp(QMainWindow):
 
             # ── Callbacks (defined before card so they can be passed) ──
             def view_album(members=info["members"], num=album_num, no_dup=is_no_dup):
-                dlg.hide()
+                dlg.accept()
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, self.image_paths[i], "image", {})
@@ -8570,7 +8570,6 @@ class ImageSearchApp(QMainWindow):
                 self.stop_search = False
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
-                dlg.show()
 
             def rename_album(members=info["members"], num=album_num, no_dup=is_no_dup):
                 paths = [self.image_paths[i] for i in members]
