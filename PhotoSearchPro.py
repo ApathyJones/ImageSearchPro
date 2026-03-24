@@ -2121,6 +2121,11 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
         f"QLabel {{ background: transparent; border: none; }}"
         f"QCheckBox {{ background: transparent; border: none; }}"
     )
+    shadow = QGraphicsDropShadowEffect(card)
+    shadow.setBlurRadius(24)
+    shadow.setOffset(0, 6)
+    shadow.setColor(QColor(0, 0, 0, 180))
+    card.setGraphicsEffect(shadow)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(8, 8, 8, 8)
     layout.setSpacing(4)
@@ -2132,7 +2137,7 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     img_frame.setStyleSheet(
         f"QFrame#dlgImgFrame {{"
         f"  background: transparent;"
-        f"  border: 1px solid rgba(0, 0, 0, 0.3);"
+        f"  border: none;"
         f"  border-radius: 8px;"
         f"}}"
     )
@@ -2226,11 +2231,18 @@ class ResultCard(QFrame):
             f"    stop:0 {CARD_HOVER}, stop:1 rgba(28, 34, 48, 245));"
             f"}}"
         )
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 0)
-        layout.setSpacing(0)
+        # Drop shadow on the whole card
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        self.setGraphicsEffect(shadow)
 
-        # ── Image area with drop-shadow frame — fixed height ──
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+
+        # ── Image area — fixed height ──
         _IMG_AREA_H = CELL_HEIGHT - 80   # reserve 80px for the info footer
         img_frame = QFrame()
         img_frame.setObjectName("imgFrame")
@@ -2238,7 +2250,7 @@ class ResultCard(QFrame):
         img_frame.setStyleSheet(
             f"QFrame#imgFrame {{"
             f"  background: transparent;"
-            f"  border: 1px solid rgba(0, 0, 0, 0.3);"
+            f"  border: none;"
             f"  border-radius: 8px;"
             f"}}"
         )
@@ -2250,13 +2262,6 @@ class ResultCard(QFrame):
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
         img_frame_layout.addWidget(self.img_label)
-
-        # Drop shadow on the image frame
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        img_frame.setGraphicsEffect(shadow)
 
         layout.addWidget(img_frame)
 
