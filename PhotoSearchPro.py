@@ -2146,11 +2146,11 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     if pixmap is not None:
         img_label.setPixmap(pixmap)
     # Drop shadow behind the thumbnail image
-    img_shadow = QGraphicsDropShadowEffect(img_label)
-    img_shadow.setBlurRadius(24)
-    img_shadow.setOffset(0, 6)
-    img_shadow.setColor(QColor(0, 0, 0, 180))
-    img_label.setGraphicsEffect(img_shadow)
+    card._img_shadow = QGraphicsDropShadowEffect(img_label)
+    card._img_shadow.setBlurRadius(24)
+    card._img_shadow.setOffset(0, 6)
+    card._img_shadow.setColor(QColor(0, 0, 0, 180))
+    img_label.setGraphicsEffect(card._img_shadow)
     img_frame_layout.addWidget(img_label)
 
     layout.addWidget(img_frame)
@@ -2256,11 +2256,11 @@ class ResultCard(QFrame):
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
         # Drop shadow behind the thumbnail image
-        img_shadow = QGraphicsDropShadowEffect(self.img_label)
-        img_shadow.setBlurRadius(24)
-        img_shadow.setOffset(0, 6)
-        img_shadow.setColor(QColor(0, 0, 0, 180))
-        self.img_label.setGraphicsEffect(img_shadow)
+        self._img_shadow = QGraphicsDropShadowEffect(self.img_label)
+        self._img_shadow.setBlurRadius(24)
+        self._img_shadow.setOffset(0, 6)
+        self._img_shadow.setColor(QColor(0, 0, 0, 180))
+        self.img_label.setGraphicsEffect(self._img_shadow)
         img_frame_layout.addWidget(self.img_label)
 
         layout.addWidget(img_frame)
