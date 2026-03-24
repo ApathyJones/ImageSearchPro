@@ -2101,6 +2101,12 @@ class _ShadowImageLabel(QLabel):
     _SHADOW_BASE_ALPHA = 28
     _SHADOW_RADIUS = 8
 
+    def sizeHint(self):
+        return QSize(0, 0)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
     def paintEvent(self, event):
         pm = self.pixmap()
         if pm is None or pm.isNull():
