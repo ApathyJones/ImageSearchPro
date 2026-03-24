@@ -43,10 +43,10 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMessageBox, QHBoxLayout, QVBoxLayout, QGridLayout,
     QSizePolicy, QAbstractItemView, QSplitter, QRubberBand,
     QInputDialog, QComboBox, QGroupBox, QRadioButton, QPlainTextEdit,
-    QDoubleSpinBox, QGraphicsDropShadowEffect)
+    QDoubleSpinBox)
 from PyQt6.QtGui import (
     QPixmap, QImage, QFont, QCursor, QAction, QKeySequence, QIcon,
-    QPalette, QColor)
+    QPalette, QColor, QPainter, QPen, QBrush)
 from PyQt6.QtCore import (
     Qt, QTimer, QPoint, QRect, QSize, QByteArray, QMimeData, QUrl, QEvent, pyqtSignal,
     QFileSystemWatcher, QObject)
@@ -2089,6 +2089,45 @@ _DIALOG_CARD_H = 320
 _DIALOG_IMG_H = 170
 
 
+class _ShadowImageLabel(QLabel):
+    """QLabel that paints a soft drop shadow behind its pixmap.
+
+    This replaces QGraphicsDropShadowEffect which causes segfaults in Qt6
+    when many instances exist in a scroll area and the window regains focus.
+    """
+
+    _SHADOW_LAYERS = 6
+    _SHADOW_OFFSET_Y = 4
+    _SHADOW_BASE_ALPHA = 28
+    _SHADOW_RADIUS = 8
+
+    def paintEvent(self, event):
+        pm = self.pixmap()
+        if pm is None or pm.isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Centre the pixmap in available space
+        x = (self.width() - pm.width()) // 2
+        y = (self.height() - pm.height()) // 2
+
+        # Paint concentric rounded-rect shadow layers behind the pixmap
+        shadow_rect = QRect(x, y + self._SHADOW_OFFSET_Y, pm.width(), pm.height())
+        painter.setPen(Qt.PenStyle.NoPen)
+        for i in range(self._SHADOW_LAYERS, 0, -1):
+            alpha = max(1, self._SHADOW_BASE_ALPHA - (i - 1) * 4)
+            painter.setBrush(QColor(0, 0, 0, alpha))
+            painter.drawRoundedRect(
+                shadow_rect.adjusted(-i, -i, i, i),
+                self._SHADOW_RADIUS, self._SHADOW_RADIUS,
+            )
+
+        # Draw the actual pixmap on top
+        painter.drawPixmap(x, y, pm)
+        painter.end()
+
+
 def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
                        title_color=None, subtitle_color=None,
                        buttons=None, checkbox=None):
@@ -2140,17 +2179,11 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     img_frame_layout.setContentsMargins(4, 4, 4, 4)
     img_frame_layout.setSpacing(0)
 
-    img_label = QLabel()
+    img_label = _ShadowImageLabel()
     img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     img_label.setStyleSheet("background: transparent; border: none;")
     if pixmap is not None:
         img_label.setPixmap(pixmap)
-    # Drop shadow behind the thumbnail image
-    card._img_shadow = QGraphicsDropShadowEffect(img_label)
-    card._img_shadow.setBlurRadius(24)
-    card._img_shadow.setOffset(0, 6)
-    card._img_shadow.setColor(QColor(0, 0, 0, 180))
-    img_label.setGraphicsEffect(card._img_shadow)
     img_frame_layout.addWidget(img_label)
 
     layout.addWidget(img_frame)
@@ -2252,15 +2285,9 @@ class ResultCard(QFrame):
         img_frame_layout.setContentsMargins(4, 4, 4, 4)
         img_frame_layout.setSpacing(0)
 
-        self.img_label = QLabel()
+        self.img_label = _ShadowImageLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
-        # Drop shadow behind the thumbnail image
-        self._img_shadow = QGraphicsDropShadowEffect(self.img_label)
-        self._img_shadow.setBlurRadius(24)
-        self._img_shadow.setOffset(0, 6)
-        self._img_shadow.setColor(QColor(0, 0, 0, 180))
-        self.img_label.setGraphicsEffect(self._img_shadow)
         img_frame_layout.addWidget(self.img_label)
 
         layout.addWidget(img_frame)
