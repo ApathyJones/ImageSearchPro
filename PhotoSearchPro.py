@@ -3416,15 +3416,70 @@ class ImageSearchApp(QMainWindow):
         controls_layout.addWidget(sep3)
         controls_layout.addSpacing(4)
 
-        lbl_sort = QLabel("Sort:")
-        lbl_sort.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt; font-weight: 500;")
-        controls_layout.addWidget(lbl_sort)
+        # Sort — integrated capsule with label + dropdown
+        sort_capsule = QWidget()
+        sort_capsule.setObjectName("sortCapsule")
+        sort_capsule.setStyleSheet(
+            f"QWidget#sortCapsule {{"
+            f"  background: rgba(28, 34, 48, 180);"
+            f"  border: 1px solid {BORDER_MID};"
+            f"  border-radius: 10px;"
+            f"}}"
+        )
+        sort_inner = QHBoxLayout(sort_capsule)
+        sort_inner.setContentsMargins(10, 3, 3, 3)
+        sort_inner.setSpacing(6)
+
+        lbl_sort = QLabel("Sort")
+        lbl_sort.setStyleSheet(
+            f"color: {FG_MUTED}; font-size: 8pt; font-weight: 600;"
+            f"letter-spacing: 0.5px; text-transform: uppercase;"
+            f"background: transparent; border: none;"
+        )
+        sort_inner.addWidget(lbl_sort)
+
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(["Score ↓", "Date (Newest)", "Date (Oldest)", "Name A→Z", "Name Z→A", "Size ↓"])
-        self.sort_combo.setFixedWidth(130)
+        self.sort_combo.setFixedWidth(138)
         self.sort_combo.setToolTip("Re-sort the current search results")
+        self.sort_combo.setStyleSheet(
+            f"QComboBox {{"
+            f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            f"    stop:0 rgba(56, 68, 92, 200), stop:1 rgba(36, 44, 61, 220));"
+            f"  color: {FG};"
+            f"  border: 1px solid rgba(79, 143, 255, 0.2);"
+            f"  border-radius: 8px;"
+            f"  padding: 4px 10px;"
+            f"  font-size: 9pt;"
+            f"  font-weight: 600;"
+            f"}}"
+            f"QComboBox:hover {{"
+            f"  border-color: {ACCENT_GLOW};"
+            f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            f"    stop:0 rgba(66, 80, 108, 210), stop:1 rgba(44, 54, 72, 230));"
+            f"}}"
+            f"QComboBox::drop-down {{ border: none; width: 20px; }}"
+            f"QComboBox QAbstractItemView {{"
+            f"  background-color: {SURFACE};"
+            f"  color: {FG};"
+            f"  border: 1px solid {BORDER_MID};"
+            f"  border-radius: 8px;"
+            f"  selection-background-color: rgba(79, 143, 255, 0.25);"
+            f"  outline: none;"
+            f"  padding: 4px;"
+            f"}}"
+            f"QComboBox QAbstractItemView::item {{"
+            f"  padding: 6px 12px; border-radius: 6px;"
+            f"}}"
+            f"QComboBox QAbstractItemView::item:selected,"
+            f"QComboBox QAbstractItemView::item:hover {{"
+            f"  background-color: rgba(79, 143, 255, 0.25);"
+            f"}}"
+        )
         self.sort_combo.currentIndexChanged.connect(self._resort_and_redisplay)
-        controls_layout.addWidget(self.sort_combo)
+        sort_inner.addWidget(self.sort_combo)
+
+        controls_layout.addWidget(sort_capsule)
 
         sep4 = QFrame()
         sep4.setFrameShape(QFrame.Shape.VLine)
