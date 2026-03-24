@@ -2122,8 +2122,8 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
         f"QCheckBox {{ background: transparent; border: none; }}"
     )
     layout = QVBoxLayout(card)
-    layout.setContentsMargins(8, 8, 8, 0)
-    layout.setSpacing(0)
+    layout.setContentsMargins(8, 8, 8, 8)
+    layout.setSpacing(4)
 
     # ── Image area ──
     img_frame = QFrame()
@@ -8506,6 +8506,7 @@ class ImageSearchApp(QMainWindow):
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
         grid_layout.setSpacing(10)
+        grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll.setWidget(grid_widget)
         body_lay.addWidget(scroll, stretch=1)
 
@@ -8871,6 +8872,7 @@ class ImageSearchApp(QMainWindow):
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
         grid_layout.setSpacing(10)
+        grid_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         scroll.setWidget(grid_widget)
         body_lay.addWidget(scroll, stretch=1)
 
