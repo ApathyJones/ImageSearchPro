@@ -2157,10 +2157,20 @@ class ResultCard(QFrame):
         )
         info_footer_layout.addWidget(self.select_cb, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        # Score label — compact, muted, top of footer
+        self.score_label = QLabel()
+        self.score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.score_label.setStyleSheet(
+            f"color: {ACCENT}; font-size: 9px; font-weight: bold;"
+            f"border: none; background: transparent; padding: 0;"
+        )
+        info_footer_layout.addWidget(self.score_label)
+
+        # Filename label — below score
         self.info_label = QLabel()
         self.info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.info_label.setStyleSheet(
-            f"color: {FG_MUTED}; font-size: 11px; border: none; background: transparent;"
+            f"color: {FG_MUTED}; font-size: 10px; border: none; background: transparent;"
             f"padding: 0 2px;"
         )
         self.info_label.setWordWrap(True)
@@ -6329,15 +6339,15 @@ class ImageSearchApp(QMainWindow):
         card.select_cb.stateChanged.connect(
             lambda state, p=path: self._set_card_selection_by_path(p, state == Qt.CheckState.Checked.value))
         
+        card.score_label.setText(f"{score:.3f}")
         if result_type == "video":
             ts = metadata.get("timestamp", 0.0)
             m, s = int(ts)//60, int(ts)%60
             name = os.path.basename(path)[:40]
-            text = f"{score:.3f}\n{name}\nt={m}:{s:02d}"
+            card.info_label.setText(f"{name}\nt={m}:{s:02d}")
         else:
             name = os.path.basename(path)[:40]
-            text = f"{score:.3f}\n{name}"
-        card.info_label.setText(text)
+            card.info_label.setText(name)
 
         self.scroll_area._grid.addWidget(card, row, col)
         safe_print(f"[ADD_THUMB] Card added to grid OK")
@@ -8435,6 +8445,7 @@ class ImageSearchApp(QMainWindow):
             card_layout.addWidget(size_lbl)
 
             def view_album(members=info["members"], num=album_num, no_dup=is_no_dup):
+                dlg.hide()
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, self.image_paths[i], "image", {})
@@ -8454,6 +8465,7 @@ class ImageSearchApp(QMainWindow):
                 self.stop_search = False
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
+                dlg.show()
 
             def rename_album(members=info["members"], num=album_num, no_dup=is_no_dup):
                 paths = [self.image_paths[i] for i in members]
@@ -8461,13 +8473,62 @@ class ImageSearchApp(QMainWindow):
                 rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self)
                 rename_dlg.exec()
 
+            def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup):
+                """Create a subfolder and copy/move album images into it."""
+                paths = [self.image_paths[i] for i in members]
+                default_name = "No_Duplicates_Found" if no_dup else f"Album_{num}"
+                parent_dir = os.path.dirname(paths[0]) if paths else (self.folder or "")
+                name, ok = QInputDialog.getText(
+                    dlg, "Create Album Folder",
+                    f"Folder name (will be created inside\n{parent_dir}):",
+                    text=default_name)
+                if not ok or not name.strip():
+                    return
+                dest = os.path.join(parent_dir, name.strip())
+                # Ask copy vs move
+                msg = QMessageBox(dlg)
+                msg.setWindowTitle("Copy or Move?")
+                msg.setText(f"Create folder:\n{dest}\n\n{len(paths)} file(s) — copy or move?")
+                copy_btn = msg.addButton("Copy", QMessageBox.ButtonRole.AcceptRole)
+                move_btn = msg.addButton("Move", QMessageBox.ButtonRole.DestructiveRole)
+                msg.addButton(QMessageBox.StandardButton.Cancel)
+                msg.exec()
+                clicked = msg.clickedButton()
+                if clicked is copy_btn:
+                    do_move = False
+                elif clicked is move_btn:
+                    do_move = True
+                else:
+                    return
+                import shutil
+                os.makedirs(dest, exist_ok=True)
+                ok_count, errors = 0, []
+                for p in paths:
+                    try:
+                        if do_move:
+                            shutil.move(p, os.path.join(dest, os.path.basename(p)))
+                        else:
+                            shutil.copy2(p, os.path.join(dest, os.path.basename(p)))
+                        ok_count += 1
+                    except Exception as e:
+                        errors.append(f"{os.path.basename(p)}: {e}")
+                action = "Moved" if do_move else "Copied"
+                summary = f"{action} {ok_count}/{len(paths)} files to:\n{dest}"
+                if errors:
+                    summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
+                QMessageBox.information(dlg, "Done", summary)
+
             view_btn = QPushButton("View Album")
+            create_btn = QPushButton("Create Folder")
             rename_btn = QPushButton("Rename…")
             _style_btn(view_btn, "accent")
+            _style_btn(create_btn, "muted")
             _style_btn(rename_btn, "muted")
             view_btn.clicked.connect(lambda _, fn=view_album: fn())
+            create_btn.clicked.connect(lambda _, fn=create_folder: fn())
             rename_btn.clicked.connect(lambda _, fn=rename_album: fn())
             card_layout.addWidget(view_btn)
+            card_layout.addWidget(create_btn)
             card_layout.addWidget(rename_btn)
 
             grid_layout.addWidget(card, row, col)
