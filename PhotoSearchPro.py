@@ -2121,11 +2121,6 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
         f"QLabel {{ background: transparent; border: none; }}"
         f"QCheckBox {{ background: transparent; border: none; }}"
     )
-    shadow = QGraphicsDropShadowEffect(card)
-    shadow.setBlurRadius(24)
-    shadow.setOffset(0, 6)
-    shadow.setColor(QColor(0, 0, 0, 180))
-    card.setGraphicsEffect(shadow)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(8, 8, 8, 8)
     layout.setSpacing(4)
@@ -2150,6 +2145,12 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     img_label.setStyleSheet("background: transparent; border: none;")
     if pixmap is not None:
         img_label.setPixmap(pixmap)
+    # Drop shadow behind the thumbnail image
+    img_shadow = QGraphicsDropShadowEffect(img_label)
+    img_shadow.setBlurRadius(24)
+    img_shadow.setOffset(0, 6)
+    img_shadow.setColor(QColor(0, 0, 0, 180))
+    img_label.setGraphicsEffect(img_shadow)
     img_frame_layout.addWidget(img_label)
 
     layout.addWidget(img_frame)
@@ -2231,13 +2232,6 @@ class ResultCard(QFrame):
             f"    stop:0 {CARD_HOVER}, stop:1 rgba(28, 34, 48, 245));"
             f"}}"
         )
-        # Drop shadow on the whole card
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(24)
-        shadow.setOffset(0, 6)
-        shadow.setColor(QColor(0, 0, 0, 180))
-        self.setGraphicsEffect(shadow)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
@@ -2261,6 +2255,12 @@ class ResultCard(QFrame):
         self.img_label = QLabel()
         self.img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.img_label.setStyleSheet("background: transparent; border: none;")
+        # Drop shadow behind the thumbnail image
+        img_shadow = QGraphicsDropShadowEffect(self.img_label)
+        img_shadow.setBlurRadius(24)
+        img_shadow.setOffset(0, 6)
+        img_shadow.setColor(QColor(0, 0, 0, 180))
+        self.img_label.setGraphicsEffect(img_shadow)
         img_frame_layout.addWidget(self.img_label)
 
         layout.addWidget(img_frame)
