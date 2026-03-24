@@ -2105,15 +2105,24 @@ class _ShadowImageLabel(QLabel):
         pm = self.pixmap()
         if pm is None or pm.isNull():
             return
+
+        # Scale pixmap to fit label bounds, preserving aspect ratio
+        scaled = pm.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setClipRect(self.rect())
 
-        # Centre the pixmap in available space
-        x = (self.width() - pm.width()) // 2
-        y = (self.height() - pm.height()) // 2
+        # Centre the scaled pixmap in available space
+        x = (self.width() - scaled.width()) // 2
+        y = (self.height() - scaled.height()) // 2
 
         # Paint concentric rounded-rect shadow layers behind the pixmap
-        shadow_rect = QRect(x, y + self._SHADOW_OFFSET_Y, pm.width(), pm.height())
+        shadow_rect = QRect(x, y + self._SHADOW_OFFSET_Y, scaled.width(), scaled.height())
         painter.setPen(Qt.PenStyle.NoPen)
         for i in range(self._SHADOW_LAYERS, 0, -1):
             alpha = max(1, self._SHADOW_BASE_ALPHA - (i - 1) * 4)
@@ -2124,7 +2133,7 @@ class _ShadowImageLabel(QLabel):
             )
 
         # Draw the actual pixmap on top
-        painter.drawPixmap(x, y, pm)
+        painter.drawPixmap(x, y, scaled)
         painter.end()
 
 
