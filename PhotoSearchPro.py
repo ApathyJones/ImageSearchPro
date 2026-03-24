@@ -2287,7 +2287,8 @@ class ResultCard(QFrame):
         layout.setSpacing(4)
 
         # ── Image area — fixed height ──
-        _IMG_AREA_H = CELL_HEIGHT - 80   # reserve 80px for the info footer
+        # Card margins: 8+8=16, spacing: 4, footer: 72 → 92px reserved
+        _IMG_AREA_H = CELL_HEIGHT - 92
         img_frame = QFrame()
         img_frame.setObjectName("imgFrame")
         img_frame.setFixedHeight(_IMG_AREA_H)
