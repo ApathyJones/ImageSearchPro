@@ -2078,6 +2078,133 @@ def create_model(model_key: str):
         raise ValueError(f"Unknown model type: {mtype!r}")
 
 
+_DIALOG_CARD_W = 220
+_DIALOG_CARD_H = 320
+_DIALOG_IMG_H = 170
+
+
+def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
+                       title_color=None, subtitle_color=None,
+                       buttons=None, checkbox=None):
+    """Build a card widget matching ResultCard's visual style for use in dialogs.
+
+    Returns (card_frame, img_label) so callers can set the pixmap later if needed.
+    buttons: list of (label, style, callback)
+    checkbox: (label, checked, callback) or None
+    """
+    if title_color is None:
+        title_color = ACCENT
+    if subtitle_color is None:
+        subtitle_color = FG_MUTED
+
+    card = QFrame()
+    card.setObjectName("dlgCard")
+    card.setFixedSize(_DIALOG_CARD_W, _DIALOG_CARD_H)
+    card.setStyleSheet(
+        f"QFrame#dlgCard {{"
+        f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        f"    stop:0 {CARD_BG}, stop:1 rgba(22, 27, 36, 240));"
+        f"  border: 1px solid {BORDER};"
+        f"  border-radius: 12px;"
+        f"}}"
+        f"QFrame#dlgCard:hover {{"
+        f"  border-color: rgba(79, 143, 255, 0.5);"
+        f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+        f"    stop:0 {CARD_HOVER}, stop:1 rgba(28, 34, 48, 245));"
+        f"}}"
+        f"QLabel {{ background: transparent; border: none; }}"
+        f"QCheckBox {{ background: transparent; border: none; }}"
+    )
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(8, 8, 8, 0)
+    layout.setSpacing(0)
+
+    # ── Image area ──
+    img_frame = QFrame()
+    img_frame.setObjectName("dlgImgFrame")
+    img_frame.setFixedHeight(_DIALOG_IMG_H)
+    img_frame.setStyleSheet(
+        f"QFrame#dlgImgFrame {{"
+        f"  background: rgba(6, 8, 12, 0.6);"
+        f"  border: 1px solid rgba(0, 0, 0, 0.3);"
+        f"  border-radius: 8px;"
+        f"}}"
+    )
+    img_frame_layout = QVBoxLayout(img_frame)
+    img_frame_layout.setContentsMargins(4, 4, 4, 4)
+    img_frame_layout.setSpacing(0)
+
+    img_label = QLabel()
+    img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    img_label.setStyleSheet("background: transparent; border: none;")
+    if pixmap is not None:
+        img_label.setPixmap(pixmap)
+    img_frame_layout.addWidget(img_label)
+
+    shadow = QGraphicsDropShadowEffect(card)
+    shadow.setBlurRadius(18)
+    shadow.setOffset(0, 4)
+    shadow.setColor(QColor(0, 0, 0, 120))
+    img_frame.setGraphicsEffect(shadow)
+    layout.addWidget(img_frame)
+
+    # ── Info footer ──
+    footer_h = _DIALOG_CARD_H - _DIALOG_IMG_H - 8  # 8 = top margin
+    info_footer = QFrame()
+    info_footer.setObjectName("dlgFooter")
+    info_footer.setFixedHeight(footer_h)
+    info_footer.setStyleSheet(
+        f"QFrame#dlgFooter {{"
+        f"  background: rgba(10, 14, 20, 0.5);"
+        f"  border-top: 1px solid rgba(42, 52, 71, 0.6);"
+        f"  border-bottom-left-radius: 12px;"
+        f"  border-bottom-right-radius: 12px;"
+        f"}}"
+    )
+    footer_layout = QVBoxLayout(info_footer)
+    footer_layout.setContentsMargins(6, 3, 6, 3)
+    footer_layout.setSpacing(1)
+
+    # Title
+    title_lbl = QLabel(title_text)
+    title_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    title_lbl.setStyleSheet(
+        f"color: {title_color}; font-size: 9px; font-weight: bold; padding: 0;")
+    title_lbl.setWordWrap(True)
+    footer_layout.addWidget(title_lbl)
+
+    # Subtitle
+    sub_lbl = QLabel(subtitle_text)
+    sub_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    sub_lbl.setStyleSheet(
+        f"color: {subtitle_color}; font-size: 10px; padding: 0 2px;")
+    sub_lbl.setWordWrap(True)
+    footer_layout.addWidget(sub_lbl)
+
+    # Optional checkbox
+    if checkbox:
+        cb_label, cb_checked, cb_callback = checkbox
+        cb = QCheckBox(cb_label)
+        cb.setChecked(cb_checked)
+        cb.setStyleSheet(
+            f"color: {FG_MUTED}; font-size: 8pt; background: transparent;"
+            f"QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; }}")
+        if cb_callback:
+            cb.stateChanged.connect(cb_callback)
+        footer_layout.addWidget(cb, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    # Buttons
+    if buttons:
+        for btn_label, btn_style, btn_cb in buttons:
+            btn = QPushButton(btn_label)
+            _style_btn(btn, btn_style)
+            btn.clicked.connect(lambda _, fn=btn_cb: fn())
+            footer_layout.addWidget(btn)
+
+    layout.addWidget(info_footer)
+    return card, img_label
+
+
 class ResultCard(QFrame):
     """A card widget displaying a single search result (image or video frame)."""
     def __init__(self, parent=None):
@@ -7771,58 +7898,41 @@ class ImageSearchApp(QMainWindow):
             thumbs_row_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
 
             for k, (abs_path, rel_path, pil_img) in enumerate(group):
-                # Mini image card
-                cell = QFrame()
-                cell.setObjectName("img_card")
-                cell.setStyleSheet(
-                    f"QFrame#img_card {{"
-                    f"  background-color: {PANEL_BG}; border: 1px solid {BORDER};"
-                    f"  border-radius: 6px;"
-                    f"}}"
-                    f"QLabel {{ background: transparent; border: none; }}"
-                    f"QCheckBox {{ background: transparent; border: none; }}")
-                cell_layout = QVBoxLayout(cell)
-                cell_layout.setContentsMargins(6, 6, 6, 6)
-                cell_layout.setSpacing(3)
-                cell_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-                if pil_img is not None:
-                    pixmap = pil_to_pixmap(pil_img)
-                    img_lbl = ClickableImageLabel()
-                    img_lbl.setPixmap(pixmap)
-                    img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    img_lbl._on_click = (lambda p=abs_path: self.open_image_viewer(p))
-                    cell_layout.addWidget(img_lbl)
-                else:
-                    no_prev = QLabel("[no preview]")
-                    no_prev.setFixedSize(150, 100)
-                    no_prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                    no_prev.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
-                    cell_layout.addWidget(no_prev)
-
+                pixmap = pil_to_pixmap(pil_img) if pil_img is not None else None
                 name = os.path.basename(rel_path)
                 if len(name) > 22:
                     name = name[:19] + "..."
-                name_lbl = QLabel(name)
-                name_lbl.setWordWrap(True)
-                name_lbl.setStyleSheet(f"font-size: 8pt; color: {FG};")
-                cell_layout.addWidget(name_lbl)
-
                 try:
                     fsize = os.path.getsize(abs_path)
                     size_str = (f"{fsize/1024:.0f} KB" if fsize < 1024*1024
                                 else f"{fsize/1024/1024:.1f} MB")
-                    size_lbl = QLabel(size_str)
-                    size_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
-                    cell_layout.addWidget(size_lbl)
                 except Exception:
-                    pass
+                    size_str = ""
 
-                act_cb = QCheckBox("Act on")
-                act_cb.setChecked(k > 0)
+                # Store checkbox ref via mutable list
+                cb_ref = [None]
+                def _cb_factory(ref=cb_ref):
+                    def _on_cb(state):
+                        pass  # checkbox state tracked via action_vars
+                    return _on_cb
+
+                cell, img_lbl = _build_dialog_card(
+                    pixmap=pixmap,
+                    title_text=size_str,
+                    subtitle_text=name,
+                    title_color=FG_MUTED,
+                    subtitle_color=FG,
+                    checkbox=("Act on", k > 0, None),
+                )
+                # Make image clickable for viewer
+                img_lbl.setCursor(Qt.CursorShape.PointingHandCursor)
+                img_lbl.mousePressEvent = (lambda ev, p=abs_path: self.open_image_viewer(p))
+
+                # Grab the checkbox from the footer for action_vars tracking
+                footer = cell.findChild(QFrame, "dlgFooter")
+                act_cb = footer.findChild(QCheckBox)
                 action_vars[abs_path] = act_cb
                 path_to_group[abs_path] = grp_idx
-                cell_layout.addWidget(act_cb)
 
                 thumbs_row_layout.addWidget(cell)
 
@@ -8388,7 +8498,7 @@ class ImageSearchApp(QMainWindow):
         scroll.setWidget(grid_widget)
         body_lay.addWidget(scroll, stretch=1)
 
-        ALBUM_THUMB = (160, 160)
+        ALBUM_THUMB = (_DIALOG_IMG_H - 10, _DIALOG_IMG_H - 10)
         COLS = 4
 
         for idx, info in enumerate(cluster_info):
@@ -8396,54 +8506,10 @@ class ImageSearchApp(QMainWindow):
             abs_path = self.image_paths[rep_idx]  # already absolute
             row, col = divmod(idx, COLS)
 
-            card = QFrame()
-            card.setObjectName("album_card")
-            card.setStyleSheet(
-                f"QFrame#album_card {{ background-color: {CARD_BG}; border: 1px solid {BORDER};"
-                f"  border-radius: 7px; }}"
-                f"QLabel {{ background: transparent; border: none; color: {FG}; }}")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 8, 8, 8)
-            card_layout.setSpacing(5)
-            card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-            try:
-                if abs_path.lower().endswith(RAW_EXTS):
-                    import rawpy
-                    with rawpy.imread(abs_path) as raw:
-                        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
-                    img = Image.fromarray(rgb)
-                else:
-                    safe_p = get_safe_path(abs_path)
-                    img = Image.open(safe_p)
-                    img.load()
-                img.thumbnail(ALBUM_THUMB)
-                pixmap = pil_to_pixmap(img)
-                img_lbl = QLabel()
-                img_lbl.setPixmap(pixmap)
-                img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                card_layout.addWidget(img_lbl)
-            except Exception:
-                no_prev = QLabel("[preview unavailable]")
-                no_prev.setFixedSize(160, 80)
-                no_prev.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                no_prev.setStyleSheet(f"color: {FG_MUTED};")
-                card_layout.addWidget(no_prev)
-
             is_no_dup = info.get("no_dup_label", False)
             album_num = idx + 1
-            if is_no_dup:
-                alb_title = QLabel("No Duplicates Found")
-                alb_title.setStyleSheet(f"color: {ORANGE}; font-weight: bold; font-size: 9pt;")
-            else:
-                alb_title = QLabel(f"Album {album_num}")
-                alb_title.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
-            card_layout.addWidget(alb_title)
 
-            size_lbl = QLabel(f"{info['size']:,} images")
-            size_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
-            card_layout.addWidget(size_lbl)
-
+            # ── Callbacks (defined before card so they can be passed) ──
             def view_album(members=info["members"], num=album_num, no_dup=is_no_dup):
                 dlg.hide()
                 self.cancel_search(clear_ui=True)
@@ -8485,7 +8551,6 @@ class ImageSearchApp(QMainWindow):
                 if not ok or not name.strip():
                     return
                 dest = os.path.join(parent_dir, name.strip())
-                # Ask copy vs move
                 msg = QMessageBox(dlg)
                 msg.setWindowTitle("Copy or Move?")
                 msg.setText(f"Create folder:\n{dest}\n\n{len(paths)} file(s) — copy or move?")
@@ -8518,19 +8583,37 @@ class ImageSearchApp(QMainWindow):
                     summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
                 QMessageBox.information(dlg, "Done", summary)
 
-            view_btn = QPushButton("View Album")
-            create_btn = QPushButton("Create Folder")
-            rename_btn = QPushButton("Rename…")
-            _style_btn(view_btn, "accent")
-            _style_btn(create_btn, "muted")
-            _style_btn(rename_btn, "muted")
-            view_btn.clicked.connect(lambda _, fn=view_album: fn())
-            create_btn.clicked.connect(lambda _, fn=create_folder: fn())
-            rename_btn.clicked.connect(lambda _, fn=rename_album: fn())
-            card_layout.addWidget(view_btn)
-            card_layout.addWidget(create_btn)
-            card_layout.addWidget(rename_btn)
+            # ── Build thumbnail ──
+            pixmap = None
+            try:
+                if abs_path.lower().endswith(RAW_EXTS):
+                    import rawpy
+                    with rawpy.imread(abs_path) as raw:
+                        rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False, output_bps=8)
+                    img = Image.fromarray(rgb)
+                else:
+                    safe_p = get_safe_path(abs_path)
+                    img = Image.open(safe_p)
+                    img.load()
+                img.thumbnail(ALBUM_THUMB)
+                pixmap = pil_to_pixmap(img)
+            except Exception:
+                pass
 
+            title = "No Duplicates Found" if is_no_dup else f"Album {album_num}"
+            t_color = ORANGE if is_no_dup else ACCENT_SECONDARY
+
+            card, _ = _build_dialog_card(
+                pixmap=pixmap,
+                title_text=title,
+                subtitle_text=f"{info['size']:,} images",
+                title_color=t_color,
+                buttons=[
+                    ("View Album", "accent", view_album),
+                    ("Create Folder", "muted", create_folder),
+                    ("Rename\u2026", "muted", rename_album),
+                ],
+            )
             grid_layout.addWidget(card, row, col)
 
         albums_footer = _make_panel()
@@ -8796,43 +8879,7 @@ class ImageSearchApp(QMainWindow):
 
             row, col = divmod(card_idx, COLS)
 
-            card = QFrame()
-            card.setObjectName("nsfw_card")
-            card.setStyleSheet(
-                f"QFrame#nsfw_card {{ background-color: {CARD_BG}; border: 1px solid {BORDER};"
-                f"  border-radius: 7px; }}"
-                f"QLabel {{ background: transparent; border: none; color: {FG}; }}")
-            card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(8, 8, 8, 8)
-            card_layout.setSpacing(5)
-            card_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
-            try:
-                img = Image.open(get_safe_path(rep_path))
-                img.load()
-                img.thumbnail(THUMB_SIZE)
-                px = pil_to_pixmap(img)
-                thumb = QLabel()
-                thumb.setPixmap(px)
-                thumb.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                card_layout.addWidget(thumb)
-            except Exception:
-                ph = QLabel("[preview unavailable]")
-                ph.setFixedSize(160, 80)
-                ph.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                ph.setStyleSheet(f"color: {FG_MUTED};")
-                card_layout.addWidget(ph)
-
-            title_lbl = QLabel(label.replace("_", " ").title())
-            title_lbl.setStyleSheet(
-                f"color: {ACCENT_SECONDARY}; font-weight: bold; font-size: 9pt;")
-            title_lbl.setWordWrap(True)
-            card_layout.addWidget(title_lbl)
-
-            info_lbl = QLabel(f"{len(entries):,} image(s)  •  top: {rep_score:.2f}")
-            info_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
-            card_layout.addWidget(info_lbl)
-
+            # ── Callbacks ──
             def _view_bucket(lbl=label, ents=entries):
                 self._nsfw_load_results(
                     [(score, path, "image", {}) for path, score in ents],
@@ -8845,15 +8892,26 @@ class ImageSearchApp(QMainWindow):
                 rename_dlg = BatchRenameDialog(dlg, paths, suggested=clean_label, app=self)
                 rename_dlg.exec()
 
-            view_btn = QPushButton("View Images")
-            rename_btn = QPushButton("Rename…")
-            _style_btn(view_btn, "accent")
-            _style_btn(rename_btn, "muted")
-            view_btn.clicked.connect(lambda _, fn=_view_bucket: fn())
-            rename_btn.clicked.connect(lambda _, fn=_rename_bucket: fn())
-            card_layout.addWidget(view_btn)
-            card_layout.addWidget(rename_btn)
+            # ── Thumbnail ──
+            pixmap = None
+            try:
+                img = Image.open(get_safe_path(rep_path))
+                img.load()
+                img.thumbnail(THUMB_SIZE)
+                pixmap = pil_to_pixmap(img)
+            except Exception:
+                pass
 
+            card, _ = _build_dialog_card(
+                pixmap=pixmap,
+                title_text=label.replace("_", " ").title(),
+                subtitle_text=f"{len(entries):,} image(s)  \u2022  top: {rep_score:.2f}",
+                title_color=ACCENT_SECONDARY,
+                buttons=[
+                    ("View Images", "accent", _view_bucket),
+                    ("Rename\u2026", "muted", _rename_bucket),
+                ],
+            )
             grid_layout.addWidget(card, row, col)
 
         # ── Close ─────────────────────────────────────────────────────────────
