@@ -9295,7 +9295,8 @@ class ImageSearchApp(QMainWindow):
             try:
                 app = self._get_face_app()
             except RuntimeError as e:
-                self._safe_after(0, lambda: QMessageBox.critical(dlg, "Missing Dependency", str(e)))
+                err_msg = str(e)
+                self._safe_after(0, lambda: QMessageBox.critical(dlg, "Missing Dependency", err_msg))
                 self._safe_after(0, lambda: build_btn.setEnabled(True))
                 self._safe_after(0, lambda: build_btn.setText("Build / Rebuild Face Index"))
                 return
