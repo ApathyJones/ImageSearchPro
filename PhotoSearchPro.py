@@ -2131,7 +2131,7 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     img_frame.setFixedHeight(_DIALOG_IMG_H)
     img_frame.setStyleSheet(
         f"QFrame#dlgImgFrame {{"
-        f"  background: rgba(6, 8, 12, 0.6);"
+        f"  background: transparent;"
         f"  border: 1px solid rgba(0, 0, 0, 0.3);"
         f"  border-radius: 8px;"
         f"}}"
@@ -2147,11 +2147,6 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
         img_label.setPixmap(pixmap)
     img_frame_layout.addWidget(img_label)
 
-    shadow = QGraphicsDropShadowEffect(card)
-    shadow.setBlurRadius(18)
-    shadow.setOffset(0, 4)
-    shadow.setColor(QColor(0, 0, 0, 120))
-    img_frame.setGraphicsEffect(shadow)
     layout.addWidget(img_frame)
 
     # ── Info footer ──
@@ -2242,7 +2237,7 @@ class ResultCard(QFrame):
         img_frame.setFixedHeight(_IMG_AREA_H)
         img_frame.setStyleSheet(
             f"QFrame#imgFrame {{"
-            f"  background: rgba(6, 8, 12, 0.6);"
+            f"  background: transparent;"
             f"  border: 1px solid rgba(0, 0, 0, 0.3);"
             f"  border-radius: 8px;"
             f"}}"
@@ -2256,11 +2251,11 @@ class ResultCard(QFrame):
         self.img_label.setStyleSheet("background: transparent; border: none;")
         img_frame_layout.addWidget(self.img_label)
 
-        # Real drop shadow on the image frame
+        # Drop shadow on the image frame
         shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(18)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QColor(0, 0, 0, 120))
+        shadow.setBlurRadius(24)
+        shadow.setOffset(0, 6)
+        shadow.setColor(QColor(0, 0, 0, 180))
         img_frame.setGraphicsEffect(shadow)
 
         layout.addWidget(img_frame)
