@@ -441,22 +441,22 @@ def _dlg_stylesheet():
             background: rgba(79, 143, 255, 0.05);
         }}
         QScrollBar:vertical {{
-            background: transparent; width: 6px;
-            border-radius: 3px; border: none; margin: 4px 2px;
+            background: transparent; width: 10px;
+            border-radius: 5px; border: none; margin: 4px 2px;
         }}
         QScrollBar::handle:vertical {{
-            background: rgba(123, 134, 152, 0.3); border-radius: 3px;
+            background: rgba(123, 134, 152, 0.3); border-radius: 5px;
             min-height: 32px;
         }}
         QScrollBar::handle:vertical:hover {{ background: rgba(123, 134, 152, 0.6); }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
         QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
         QScrollBar:horizontal {{
-            background: transparent; height: 6px; border-radius: 3px;
+            background: transparent; height: 10px; border-radius: 5px;
             margin: 2px 4px;
         }}
         QScrollBar::handle:horizontal {{
-            background: rgba(123, 134, 152, 0.3); border-radius: 3px;
+            background: rgba(123, 134, 152, 0.3); border-radius: 5px;
             min-width: 32px;
         }}
         QScrollBar::handle:horizontal:hover {{ background: rgba(123, 134, 152, 0.6); }}
@@ -603,16 +603,22 @@ def _make_panel(parent=None, bottom_border=False):
     return f
 
 def _dark_title(widget):
-    """Apply Windows dark title bar to any QWidget/QDialog (no-op on other platforms)."""
-    if os.name != 'nt':
-        return
-    try:
-        import ctypes
-        hwnd = int(widget.winId())
-        v = ctypes.c_int(1)
-        ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), ctypes.sizeof(v))
-    except Exception:
-        pass
+    """Apply dark title bar to any QWidget/QDialog on all platforms."""
+    # Cross-platform: set a dark palette so the window manager picks up the dark hint
+    from PyQt6.QtGui import QPalette, QColor
+    pal = widget.palette()
+    pal.setColor(QPalette.ColorRole.Window, QColor(BG))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor(FG))
+    widget.setPalette(pal)
+    # Windows-specific: request the dark title bar chrome via DWM
+    if os.name == 'nt':
+        try:
+            import ctypes
+            hwnd = int(widget.winId())
+            v = ctypes.c_int(1)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(v), ctypes.sizeof(v))
+        except Exception:
+            pass
 
 RAW_EXTS = (".cr2", ".nef", ".arw", ".dng", ".orf", ".rw2", ".raf", ".pef", ".sr2")
 
@@ -891,17 +897,17 @@ DARK_QSS = f"""
         background-color: rgba(36, 44, 61, 0.6);
     }}
 
-    /* ── Scrollbars — ultra-thin, modern ─────────────────────────────── */
+    /* ── Scrollbars — modern ──────────────────────────────────────────── */
     QScrollArea {{ background-color: {BG}; border: none; }}
     QScrollBar:vertical {{
         background: transparent;
-        width: 6px;
+        width: 10px;
         margin: 4px 2px;
-        border-radius: 3px;
+        border-radius: 5px;
     }}
     QScrollBar::handle:vertical {{
         background: rgba(123, 134, 152, 0.3);
-        border-radius: 3px;
+        border-radius: 5px;
         min-height: 32px;
     }}
     QScrollBar::handle:vertical:hover {{ background: rgba(123, 134, 152, 0.6); }}
@@ -910,13 +916,13 @@ DARK_QSS = f"""
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
     QScrollBar:horizontal {{
         background: transparent;
-        height: 6px;
+        height: 10px;
         margin: 2px 4px;
-        border-radius: 3px;
+        border-radius: 5px;
     }}
     QScrollBar::handle:horizontal {{
         background: rgba(123, 134, 152, 0.3);
-        border-radius: 3px;
+        border-radius: 5px;
         min-width: 32px;
     }}
     QScrollBar::handle:horizontal:hover {{ background: rgba(123, 134, 152, 0.6); }}
@@ -4214,6 +4220,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle(f"Skipped Files — {len(combined)} total")
         dlg.resize(680, 420)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -4531,6 +4538,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Select Folders to Index")
         dlg.resize(960, 480)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         outer = QVBoxLayout(dlg)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -7327,6 +7335,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Search History & Saved Presets")
         dlg.resize(520, 500)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -7468,6 +7477,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Folder Exclusions")
         dlg.resize(480, 400)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -7560,6 +7570,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Find Duplicates")
         dlg.setMinimumWidth(460)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -7781,6 +7792,7 @@ class ImageSearchApp(QMainWindow):
 
         # Use shared _style_btn and _dlg_stylesheet helpers
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
 
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -7809,7 +7821,7 @@ class ImageSearchApp(QMainWindow):
         # ── Scrollable group area ─────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         inner_widget = QWidget()
         inner_widget.setObjectName("inner_widget")
         inner_layout = QVBoxLayout(inner_widget)
@@ -8197,6 +8209,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Smart Albums")
         dlg.setFixedSize(440, 300)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -8300,7 +8313,6 @@ class ImageSearchApp(QMainWindow):
         foot_lay.addWidget(cancel_btn)
         layout.addWidget(footer)
 
-        _dark_title(dlg)
         dlg.exec()
 
     def _smart_albums_worker(self, n_clusters):
@@ -8466,6 +8478,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle(f"Smart Albums — {n_regular} Album{'s' if n_regular != 1 else ''}")
         dlg.resize(920, 660)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -8489,7 +8502,7 @@ class ImageSearchApp(QMainWindow):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
         grid_layout.setSpacing(10)
@@ -8627,7 +8640,6 @@ class ImageSearchApp(QMainWindow):
         alb_foot_lay.addWidget(close_btn)
         layout.addWidget(albums_footer)
 
-        _dark_title(dlg)
         dlg.exec()
 
 
@@ -8658,6 +8670,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("NSFW Scan — Select Labels")
         dlg.resize(460, 580)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -8676,7 +8689,7 @@ class ImageSearchApp(QMainWindow):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(14, 10, 20, 10)
@@ -8812,6 +8825,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle(f"NSFW Scan Results — {total_flagged:,} image(s) flagged")
         dlg.resize(980, 720)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         layout = QVBoxLayout(dlg)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -8853,7 +8867,7 @@ class ImageSearchApp(QMainWindow):
         # ── Label bucket grid ─────────────────────────────────────────────────
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         grid_widget = QWidget()
         grid_layout = QGridLayout(grid_widget)
         grid_layout.setSpacing(10)
@@ -9041,6 +9055,7 @@ class ImageSearchApp(QMainWindow):
         dlg.setWindowTitle("Face Presets — Person Recognition")
         dlg.resize(920, 620)
         dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
         main_layout = QVBoxLayout(dlg)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
