@@ -11,3 +11,11 @@ PhotoSearchPro.py.bak
 /models
 *.safetensors
 Update.bat
+Install.command
+LauncherGUI.ps1
+MigrateModels.command
+PhotoSearchPro.app/Contents/Info.plist
+PhotoSearchPro.app/Contents/MacOS/PhotoSearchPro
+Run.command
+RunSilent.vbs
+Update.command
