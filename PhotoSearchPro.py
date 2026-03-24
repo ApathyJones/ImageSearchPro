@@ -2099,7 +2099,7 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
 
     card = QFrame()
     card.setObjectName("dlgCard")
-    card.setFixedSize(_DIALOG_CARD_W, _DIALOG_CARD_H)
+    card.setFixedWidth(_DIALOG_CARD_W)
     card.setStyleSheet(
         f"QFrame#dlgCard {{"
         f"  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
@@ -2149,10 +2149,8 @@ def _build_dialog_card(pixmap=None, title_text="", subtitle_text="",
     layout.addWidget(img_frame)
 
     # ── Info footer ──
-    footer_h = _DIALOG_CARD_H - _DIALOG_IMG_H - 8  # 8 = top margin
     info_footer = QFrame()
     info_footer.setObjectName("dlgFooter")
-    info_footer.setFixedHeight(footer_h)
     info_footer.setStyleSheet(
         f"QFrame#dlgFooter {{"
         f"  background: rgba(10, 14, 20, 0.5);"
