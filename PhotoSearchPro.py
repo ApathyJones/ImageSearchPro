@@ -4928,6 +4928,7 @@ class ImageSearchApp(QMainWindow):
                 self.folders = [self.folder] + [f for f in self.folders if f != self.folder]
 
             self.load_exclusions()
+            self._load_face_data()
             self.update_stats()
             n_imgs = len(self.image_paths)
             n_vids = len(set(vp for vp, _ in self.video_paths)) if self.video_paths else 0
