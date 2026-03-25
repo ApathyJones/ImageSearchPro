@@ -3464,6 +3464,11 @@ class ImageSearchApp(QMainWindow):
         btn_image.clicked.connect(self.on_image_click)
         search_layout.addWidget(btn_image)
 
+        btn_face = QPushButton("Face")
+        btn_face.setToolTip("Search by face — select a face preset to find matching photos")
+        btn_face.clicked.connect(self.on_face_search_click)
+        search_layout.addWidget(btn_face)
+
         self.last_image_thumb = QLabel()
         self.last_image_thumb.setFixedSize(36, 36)
         self.last_image_thumb.setScaledContents(True)
@@ -9202,31 +9207,15 @@ class ImageSearchApp(QMainWindow):
         splitter.addWidget(right_widget)
         splitter.setSizes([280, 640])
 
-        # ── Bottom search controls ─────────────────────────────────────────
+        # ── Footer ─────────────────────────────────────────────────────────
         face_footer = _make_panel()
         face_foot_lay = QHBoxLayout(face_footer)
         face_foot_lay.setContentsMargins(12, 8, 12, 8)
         face_foot_lay.setSpacing(8)
-        thresh_caption = QLabel("Match threshold:")
-        thresh_caption.setStyleSheet(f"color: {FG};")
-        face_foot_lay.addWidget(thresh_caption)
-        thresh_slider = QSlider(Qt.Orientation.Horizontal)
-        thresh_slider.setRange(20, 80)
-        thresh_slider.setValue(45)
-        thresh_lbl = QLabel("0.45")
-        thresh_lbl.setStyleSheet(f"color: {ACCENT_SECONDARY}; font-weight: bold; min-width: 36px;")
-        thresh_slider.valueChanged.connect(lambda v: thresh_lbl.setText(f"{v/100:.2f}"))
-        thresh_slider.setToolTip(
-            "Cosine similarity required to count as a match.\n"
-            "0.45 is a good starting point — lower to catch more, raise to reduce false positives."
-        )
-        face_foot_lay.addWidget(thresh_slider)
-        face_foot_lay.addWidget(thresh_lbl)
-        face_foot_lay.addStretch()
-        search_btn = QPushButton("Search by Selected Person")
-        search_btn.setEnabled(False)
-        _style_btn(search_btn, "accent")
-        face_foot_lay.addWidget(search_btn)
+        tip_lbl = QLabel(
+            f"<span style='color:{FG_MUTED};'>Use the <b>Face</b> button in the "
+            "search bar to search indexed folders with these presets.</span>")
+        face_foot_lay.addWidget(tip_lbl, stretch=1)
         close_btn = QPushButton("Close")
         _style_btn(close_btn, "muted")
         close_btn.clicked.connect(dlg.accept)
@@ -9325,7 +9314,6 @@ class ImageSearchApp(QMainWindow):
             item = preset_list.currentItem()
             has = item is not None
             add_ref_btn.setEnabled(has)
-            search_btn.setEnabled(has and len(self.face_index) > 0 and has_folder)
             if has:
                 _refresh_ref_panel(item.text())
             else:
@@ -9612,32 +9600,104 @@ class ImageSearchApp(QMainWindow):
 
         build_btn.clicked.connect(_start_build)
 
-        # ── Search by person ───────────────────────────────────────────────
+        _on_preset_selected()
+        dlg.exec()
 
-        def _do_search():
-            item = preset_list.currentItem()
-            if not item:
+    def on_face_search_click(self):
+        """Main search bar 'Face' button — pick a preset and search the indexed folder."""
+        if not self.is_safe_to_act(action_name="face search"):
+            return
+        if not self.folder:
+            QMessageBox.warning(self, "No Folder",
+                "Please select and index a folder first.")
+            return
+        if not self.face_index:
+            QMessageBox.warning(self, "No Face Index",
+                "Build the face index first.\n\n"
+                "Open Face Presets → Build / Rebuild Face Index.")
+            return
+        if not self.face_presets:
+            QMessageBox.warning(self, "No Face Presets",
+                "Create face presets first.\n\n"
+                "Open Face Presets → New → add reference photos.")
+            return
+
+        # ── Small picker dialog ───────────────────────────────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Face Search")
+        dlg.setFixedWidth(400)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(12)
+
+        lay.addWidget(QLabel("Select a person to search for:"))
+
+        from PyQt6.QtWidgets import QComboBox
+        combo = QComboBox()
+        for name in sorted(self.face_presets.keys()):
+            emb = self.face_presets[name]["embedding"]
+            refs = self.face_presets[name]["references"]
+            is_valid = not np.all(emb == 0) and bool(refs)
+            label = name if is_valid else f"{name}  (no references)"
+            combo.addItem(label, userData=name if is_valid else None)
+        lay.addWidget(combo)
+
+        # Threshold
+        thresh_row = QHBoxLayout()
+        thresh_row.setSpacing(8)
+        thresh_row.addWidget(QLabel("Match threshold:"))
+        thresh_slider = QSlider(Qt.Orientation.Horizontal)
+        thresh_slider.setRange(20, 80)
+        thresh_slider.setValue(45)
+        thresh_lbl = QLabel("0.45")
+        thresh_lbl.setStyleSheet(
+            f"color: {ACCENT_SECONDARY}; font-weight: bold; min-width: 36px;")
+        thresh_slider.valueChanged.connect(
+            lambda v: thresh_lbl.setText(f"{v/100:.2f}"))
+        thresh_slider.setToolTip(
+            "Cosine similarity threshold.\n"
+            "0.45 is a good default — lower catches more, higher reduces false positives.")
+        thresh_row.addWidget(thresh_slider, stretch=1)
+        thresh_row.addWidget(thresh_lbl)
+        lay.addLayout(thresh_row)
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+        btn_row.addStretch()
+        search_btn = QPushButton("Search")
+        _style_btn(search_btn, "accent")
+        cancel_btn = QPushButton("Cancel")
+        _style_btn(cancel_btn, "muted")
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(search_btn)
+        lay.addLayout(btn_row)
+
+        def _do_face_search():
+            idx = combo.currentIndex()
+            if idx < 0:
                 return
-            preset_name = item.text()
-            threshold = thresh_slider.value() / 100.0
-            if not self.face_index:
-                _styled_msgbox(QMessageBox.Icon.Warning, "No Face Index",
-                    "Build the face index first.")
+            preset_name = combo.currentData()
+            if preset_name is None:
+                QMessageBox.warning(dlg, "No References",
+                    "This preset has no reference photos.\n"
+                    "Open Face Presets and add reference photos first.")
                 return
             preset_emb = self.face_presets[preset_name]["embedding"]
-            if np.all(preset_emb == 0):
-                _styled_msgbox(QMessageBox.Icon.Warning, "No References",
-                    "Add at least one reference photo to this preset first.")
-                return
+            threshold = thresh_slider.value() / 100.0
             dlg.accept()
+            self.cancel_search(clear_ui=True)
             self.update_status(f"Searching for '{preset_name}'…", "orange")
             Thread(
-                target=lambda: self._face_search_worker(preset_name, preset_emb, threshold),
+                target=lambda: self._face_search_worker(
+                    preset_name, preset_emb, threshold),
                 daemon=True,
             ).start()
 
-        search_btn.clicked.connect(_do_search)
-        _on_preset_selected()
+        search_btn.clicked.connect(_do_face_search)
         dlg.exec()
 
     def _face_search_worker(self, preset_name, preset_emb, threshold):
