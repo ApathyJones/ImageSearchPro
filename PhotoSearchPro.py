@@ -9191,6 +9191,14 @@ class ImageSearchApp(QMainWindow):
         ref_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         ref_scroll.setWidget(ref_inner)
         right_layout.addWidget(ref_scroll, stretch=1)
+        # Progress bar for face detection work
+        ref_progress = QProgressBar()
+        ref_progress.setRange(0, 0)  # indeterminate by default
+        ref_progress.setTextVisible(True)
+        ref_progress.setFormat("Processing…")
+        ref_progress.setFixedHeight(22)
+        ref_progress.hide()
+        right_layout.addWidget(ref_progress)
         splitter.addWidget(right_widget)
         splitter.setSizes([280, 640])
 
@@ -9296,9 +9304,18 @@ class ImageSearchApp(QMainWindow):
 
                 def _remove_ref(checked=False, i=idx, n=name):
                     self.face_presets[n]["references"].pop(i)
-                    _recompute_preset_embedding(n)
-                    self._save_face_presets()
-                    _refresh_ref_panel(n)
+                    ref_progress.setRange(0, 0)
+                    ref_progress.setFormat("Recomputing embedding…")
+                    ref_progress.show()
+                    add_ref_btn.setEnabled(False)
+                    def _bg():
+                        _recompute_preset_embedding(n)
+                        self._save_face_presets()
+                        self._safe_after(0, lambda: (
+                            ref_progress.hide(),
+                            add_ref_btn.setEnabled(True),
+                            _refresh_ref_panel(n)))
+                    Thread(target=_bg, daemon=True).start()
 
                 rm_btn.clicked.connect(_remove_ref)
                 cell_layout.addWidget(rm_btn)
@@ -9322,12 +9339,13 @@ class ImageSearchApp(QMainWindow):
         # ── Preset management ──────────────────────────────────────────────
 
         def _add_preset():
-            text, ok = QInputDialog.getText(dlg, "New Preset", "Person name:")
+            text, ok = _styled_input("New Preset", "Person name:")
             text = text.strip()
             if not ok or not text:
                 return
             if text in self.face_presets:
-                QMessageBox.warning(dlg, "Already Exists", f"A preset named '{text}' already exists.")
+                _styled_msgbox(QMessageBox.Icon.Warning, "Already Exists",
+                               f"A preset named '{text}' already exists.")
                 return
             self.face_presets[text] = {
                 "embedding": np.zeros(512, dtype=np.float32),
@@ -9342,12 +9360,13 @@ class ImageSearchApp(QMainWindow):
             if not item:
                 return
             old = item.text()
-            text, ok = QInputDialog.getText(dlg, "Rename Preset", "New name:", text=old)
+            text, ok = _styled_input("Rename Preset", "New name:", default=old)
             text = text.strip()
             if not ok or not text or text == old:
                 return
             if text in self.face_presets:
-                QMessageBox.warning(dlg, "Already Exists", f"'{text}' already exists.")
+                _styled_msgbox(QMessageBox.Icon.Warning, "Already Exists",
+                               f"'{text}' already exists.")
                 return
             self.face_presets[text] = self.face_presets.pop(old)
             self._save_face_presets()
@@ -9358,10 +9377,15 @@ class ImageSearchApp(QMainWindow):
             if not item:
                 return
             name = item.text()
-            if QMessageBox.question(
-                dlg, "Delete Preset", f"Delete preset '{name}'?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            ) != QMessageBox.StandardButton.Yes:
+            mb = QMessageBox(dlg)
+            mb.setIcon(QMessageBox.Icon.Question)
+            mb.setWindowTitle("Delete Preset")
+            mb.setText(f"Delete preset '{name}'?")
+            mb.setStandardButtons(
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            mb.setStyleSheet(_dlg_stylesheet())
+            _dark_title(mb)
+            if mb.exec() != QMessageBox.StandardButton.Yes:
                 return
             del self.face_presets[name]
             self._save_face_presets()
@@ -9372,17 +9396,45 @@ class ImageSearchApp(QMainWindow):
         rename_preset_btn.clicked.connect(_rename_preset)
         del_preset_btn.clicked.connect(_delete_preset)
 
+        # ── Styled sub-dialog helpers ─────────────────────────────────────
+
+        def _styled_msgbox(icon, title, text):
+            """Show a QMessageBox with dark theme styling."""
+            mb = QMessageBox(dlg)
+            mb.setIcon(icon)
+            mb.setWindowTitle(title)
+            mb.setText(text)
+            mb.setStyleSheet(_dlg_stylesheet())
+            _dark_title(mb)
+            mb.exec()
+
+        def _styled_input(title, label, default=""):
+            """Show a QInputDialog with dark theme styling. Returns (text, ok)."""
+            inp = QInputDialog(dlg)
+            inp.setWindowTitle(title)
+            inp.setLabelText(label)
+            inp.setTextValue(default)
+            inp.setStyleSheet(_dlg_stylesheet())
+            _dark_title(inp)
+            ok = inp.exec()
+            return inp.textValue(), bool(ok)
+
         # ── Add reference photo ────────────────────────────────────────────
 
         def _pick_face_dialog(pil_img, faces, img_path):
             """Show cropped face thumbnails so the user can pick the right person."""
             pick_dlg = QDialog(dlg)
             pick_dlg.setWindowTitle("Multiple faces — select the correct person")
+            pick_dlg.setStyleSheet(_dlg_stylesheet())
+            _dark_title(pick_dlg)
             pl = QVBoxLayout(pick_dlg)
+            pl.setContentsMargins(16, 14, 16, 14)
+            pl.setSpacing(12)
             pl.addWidget(QLabel(
                 f"{len(faces)} faces found in {os.path.basename(img_path)}.\n"
                 "Click the correct person:"))
             face_row = QHBoxLayout()
+            face_row.setSpacing(10)
             chosen = [None]
             img_arr = np.array(pil_img.convert("RGB"))
             for i, face in enumerate(faces):
@@ -9408,6 +9460,7 @@ class ImageSearchApp(QMainWindow):
                 face_row.addWidget(btn)
             pl.addLayout(face_row)
             cancel_btn = QPushButton("Cancel")
+            _style_btn(cancel_btn, "muted")
             cancel_btn.clicked.connect(pick_dlg.reject)
             pl.addWidget(cancel_btn)
             pick_dlg.exec()
@@ -9423,40 +9476,82 @@ class ImageSearchApp(QMainWindow):
                 "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tiff *.tif)")
             if not paths:
                 return
-            added, errors = 0, []
-            for path in paths:
+
+            # Disable controls while processing
+            add_ref_btn.setEnabled(False)
+            ref_progress.setRange(0, len(paths))
+            ref_progress.setValue(0)
+            ref_progress.setFormat("Loading model…")
+            ref_progress.show()
+
+            def _worker():
+                """Detect faces in background, collect results for UI thread."""
                 try:
                     app = self._get_face_app()
-                    pil_img = open_image(path)
-                    if pil_img is None:
-                        errors.append(f"{os.path.basename(path)}: could not open")
-                        continue
-                    img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
-                    faces = app.get(img_bgr)
-                    if not faces:
-                        errors.append(f"{os.path.basename(path)}: no face detected")
-                        continue
+                except RuntimeError as e:
+                    err_msg = str(e)
+                    self._safe_after(0, lambda: _finish_add_reference(
+                        preset_name, [], [], err_msg))
+                    return
+                detected = []  # list of (path, pil_img, faces)
+                errors = []
+                for i, path in enumerate(paths):
+                    self._safe_after(0, lambda v=i+1, n=len(paths):
+                        (ref_progress.setValue(v),
+                         ref_progress.setFormat(f"Scanning faces… {v}/{n}")))
+                    try:
+                        pil_img = open_image(path)
+                        if pil_img is None:
+                            errors.append(f"{os.path.basename(path)}: could not open")
+                            continue
+                        img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
+                        faces = app.get(img_bgr)
+                        if not faces:
+                            errors.append(f"{os.path.basename(path)}: no face detected")
+                            continue
+                        detected.append((path, pil_img, faces))
+                    except Exception as e:
+                        errors.append(f"{os.path.basename(path)}: {e}")
+                self._safe_after(0, lambda: _finish_add_reference(
+                    preset_name, detected, errors, None))
+
+            def _finish_add_reference(preset_name, detected, errors, fatal_err):
+                """Run on UI thread — handle multi-face picks and finalize."""
+                if fatal_err:
+                    ref_progress.hide()
+                    add_ref_btn.setEnabled(True)
+                    _styled_msgbox(QMessageBox.Icon.Critical, "Missing Dependency",
+                                   fatal_err)
+                    return
+                added = 0
+                for path, pil_img, faces in detected:
                     if len(faces) > 1:
                         face_idx = _pick_face_dialog(pil_img, faces, path)
                         if face_idx is None:
                             continue
-                    else:
-                        face_idx = 0
-                    # Store absolute path for multi-folder compatibility
                     self.face_presets[preset_name]["references"].append(path)
                     added += 1
-                except RuntimeError as e:
-                    QMessageBox.critical(dlg, "Missing Dependency", str(e))
-                    return
-                except Exception as e:
-                    errors.append(f"{os.path.basename(path)}: {e}")
-            if added:
-                _recompute_preset_embedding(preset_name)
-                self._save_face_presets()
+                ref_progress.setFormat("Computing embedding…")
+                ref_progress.setRange(0, 0)
+                if added:
+                    # Recompute embedding in background to avoid freeze
+                    def _recompute_bg():
+                        _recompute_preset_embedding(preset_name)
+                        self._save_face_presets()
+                        self._safe_after(0, lambda: _after_recompute(preset_name, errors))
+                    Thread(target=_recompute_bg, daemon=True).start()
+                else:
+                    _after_recompute(preset_name, errors)
+
+            def _after_recompute(preset_name, errors):
+                ref_progress.hide()
+                add_ref_btn.setEnabled(True)
                 _refresh_ref_panel(preset_name)
-            if errors:
-                QMessageBox.warning(dlg, "Some photos skipped",
-                    "\n".join(errors[:10]) + ("\n…" if len(errors) > 10 else ""))
+                if errors:
+                    _styled_msgbox(QMessageBox.Icon.Warning, "Some photos skipped",
+                        "\n".join(errors[:10]) + ("\n…" if len(errors) > 10 else ""))
+
+            Thread(target=_worker, daemon=True).start()
 
         add_ref_btn.clicked.connect(_add_reference)
 
@@ -9464,7 +9559,7 @@ class ImageSearchApp(QMainWindow):
 
         def _start_build():
             if not self.folder or not self.image_paths:
-                QMessageBox.warning(dlg, "Not Ready",
+                _styled_msgbox(QMessageBox.Icon.Warning, "Not Ready",
                     "Select and index a folder first, then build the face index.")
                 return
             build_btn.setEnabled(False)
@@ -9477,7 +9572,8 @@ class ImageSearchApp(QMainWindow):
                 app = self._get_face_app()
             except RuntimeError as e:
                 err_msg = str(e)
-                self._safe_after(0, lambda: QMessageBox.critical(dlg, "Missing Dependency", err_msg))
+                self._safe_after(0, lambda: _styled_msgbox(
+                    QMessageBox.Icon.Critical, "Missing Dependency", err_msg))
                 self._safe_after(0, lambda: build_btn.setEnabled(True))
                 self._safe_after(0, lambda: build_btn.setText("Build / Rebuild Face Index"))
                 return
@@ -9525,12 +9621,12 @@ class ImageSearchApp(QMainWindow):
             preset_name = item.text()
             threshold = thresh_slider.value() / 100.0
             if not self.face_index:
-                QMessageBox.warning(dlg, "No Face Index",
+                _styled_msgbox(QMessageBox.Icon.Warning, "No Face Index",
                     "Build the face index first.")
                 return
             preset_emb = self.face_presets[preset_name]["embedding"]
             if np.all(preset_emb == 0):
-                QMessageBox.warning(dlg, "No References",
+                _styled_msgbox(QMessageBox.Icon.Warning, "No References",
                     "Add at least one reference photo to this preset first.")
                 return
             dlg.accept()
