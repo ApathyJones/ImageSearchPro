@@ -3131,10 +3131,11 @@ class ImageSearchApp(QMainWindow):
         self.video_cache_file = None
         self._pending_video_refresh = False
 
-        # Face recognition index and presets
+        # Face recognition index (per-folder) and presets (global)
         self._face_app = None         # insightface FaceAnalysis (lazy-loaded)
-        self.face_index = {}          # rel_path -> list of 512d ArcFace embeddings
-        self.face_presets = {}        # name -> {"embedding": np.array, "references": [rel_paths]}
+        self.face_index = {}          # abs_path -> list of 512d ArcFace embeddings
+        self.face_presets = {}        # name -> {"embedding": np.array, "references": [abs_paths]}
+        self._load_face_presets()     # global presets available immediately
 
         # Pending batch accumulators — filled during indexing, flushed before save/search
         # Avoids O(N^2) np.concatenate per batch for large collections
@@ -9028,12 +9029,12 @@ class ImageSearchApp(QMainWindow):
         return os.path.join(self.folder, ".face_index.pkl") if self.folder else None
 
     def _face_presets_path(self):
-        return os.path.join(self.folder, ".face_presets.json") if self.folder else None
+        """Global face presets — not tied to any folder."""
+        return str(Path.home() / ".photosearchpro_face_presets.json")
 
     def _load_face_data(self):
-        """Load face index and presets from the current folder."""
+        """Load per-folder face index and global face presets."""
         self.face_index = {}
-        self.face_presets = {}
         fp = self._face_index_path()
         if fp and os.path.exists(fp):
             try:
@@ -9043,8 +9044,13 @@ class ImageSearchApp(QMainWindow):
             except Exception as e:
                 safe_print(f"[FACE] Failed to load face index: {e}")
                 self.face_index = {}
+        # Presets are loaded once at init via _load_face_presets()
+
+    def _load_face_presets(self):
+        """Load global face presets (not tied to any folder)."""
+        self.face_presets = {}
         pp = self._face_presets_path()
-        if pp and os.path.exists(pp):
+        if os.path.exists(pp):
             try:
                 with open(pp, "r", encoding="utf-8") as f:
                     raw = json.load(f)
@@ -9055,7 +9061,7 @@ class ImageSearchApp(QMainWindow):
                     }
                     for name, data in raw.items()
                 }
-                safe_print(f"[FACE] Loaded {len(self.face_presets)} face presets")
+                safe_print(f"[FACE] Loaded {len(self.face_presets)} global face presets")
             except Exception as e:
                 safe_print(f"[FACE] Failed to load presets: {e}")
                 self.face_presets = {}
@@ -9077,8 +9083,6 @@ class ImageSearchApp(QMainWindow):
 
     def _save_face_presets(self):
         pp = self._face_presets_path()
-        if not pp:
-            return
         try:
             serializable = {
                 name: {
@@ -9093,9 +9097,6 @@ class ImageSearchApp(QMainWindow):
             safe_print(f"[FACE] Failed to save presets: {e}")
 
     def on_face_presets(self):
-        if not self.folder:
-            QMessageBox.warning(self, "No Folder", "Please select and index a folder first.")
-            return
         self.open_face_presets_dialog()
 
     def open_face_presets_dialog(self):
@@ -9113,14 +9114,16 @@ class ImageSearchApp(QMainWindow):
         hdr_lay = QHBoxLayout(hdr)
         hdr_lay.setContentsMargins(14, 10, 14, 10)
         hdr_lay.setSpacing(8)
+        has_folder = bool(self.folder and self.image_paths)
         n_indexed = len(self.face_index)
-        n_total = len(self.image_paths)
-        idx_status_lbl = QLabel(
-            f"<b>Face Presets</b> — "
-            + (f"<span style='color:{FG_MUTED};'>{n_indexed:,} / {n_total:,} images scanned</span>"
-               if n_indexed else
-               f"<span style='color:{ORANGE};'>Face index not built yet</span>")
-        )
+        n_total = len(self.image_paths) if has_folder else 0
+        if not has_folder:
+            status_html = f"<span style='color:{FG_MUTED};'>Select &amp; index a folder to build face index and search</span>"
+        elif n_indexed:
+            status_html = f"<span style='color:{FG_MUTED};'>{n_indexed:,} / {n_total:,} images scanned</span>"
+        else:
+            status_html = f"<span style='color:{ORANGE};'>Face index not built yet</span>"
+        idx_status_lbl = QLabel(f"<b>Face Presets</b> — " + status_html)
         hdr_lay.addWidget(idx_status_lbl, stretch=1)
         build_btn = QPushButton("Build / Rebuild Face Index")
         build_btn.setToolTip(
@@ -9129,6 +9132,7 @@ class ImageSearchApp(QMainWindow):
             "Required before searching by person."
         )
         _style_btn(build_btn, "secondary")
+        build_btn.setEnabled(has_folder)
         hdr_lay.addWidget(build_btn)
         main_layout.addWidget(hdr)
 
@@ -9234,12 +9238,10 @@ class ImageSearchApp(QMainWindow):
             except RuntimeError:
                 return
             for ref_path in preset["references"]:
-                abs_path = (ref_path if os.path.isabs(ref_path)
-                            else os.path.join(self.folder, ref_path))
-                if not os.path.exists(abs_path):
+                if not os.path.isabs(ref_path) or not os.path.exists(ref_path):
                     continue
                 try:
-                    pil_img = open_image(abs_path)
+                    pil_img = open_image(ref_path)
                     if pil_img is None:
                         continue
                     img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
@@ -9270,12 +9272,10 @@ class ImageSearchApp(QMainWindow):
                     QLabel("No reference photos yet.\nClick 'Add Reference Photo…' to add some."), 0, 0)
                 return
             for idx, ref_path in enumerate(refs):
-                abs_path = (ref_path if os.path.isabs(ref_path)
-                            else os.path.join(self.folder, ref_path))
                 cell = QWidget()
                 cell_layout = QVBoxLayout(cell)
                 cell_layout.setContentsMargins(4, 4, 4, 4)
-                pil_img = open_image(abs_path) if os.path.exists(abs_path) else None
+                pil_img = open_image(ref_path) if os.path.exists(ref_path) else None
                 if pil_img:
                     pil_img.thumbnail((100, 100))
                     lbl = QLabel()
@@ -9308,7 +9308,7 @@ class ImageSearchApp(QMainWindow):
             item = preset_list.currentItem()
             has = item is not None
             add_ref_btn.setEnabled(has)
-            search_btn.setEnabled(has and len(self.face_index) > 0)
+            search_btn.setEnabled(has and len(self.face_index) > 0 and has_folder)
             if has:
                 _refresh_ref_panel(item.text())
             else:
@@ -9419,7 +9419,7 @@ class ImageSearchApp(QMainWindow):
                 return
             preset_name = item.text()
             paths, _ = QFileDialog.getOpenFileNames(
-                dlg, "Select Reference Photo(s)", self.folder or "",
+                dlg, "Select Reference Photo(s)", self.folder or str(Path.home()),
                 "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tiff *.tif)")
             if not paths:
                 return
@@ -9463,8 +9463,9 @@ class ImageSearchApp(QMainWindow):
         # ── Build face index ───────────────────────────────────────────────
 
         def _start_build():
-            if not self.image_paths:
-                QMessageBox.warning(dlg, "Not Ready", "No images indexed yet.")
+            if not self.folder or not self.image_paths:
+                QMessageBox.warning(dlg, "Not Ready",
+                    "Select and index a folder first, then build the face index.")
                 return
             build_btn.setEnabled(False)
             build_btn.setText("Building…")
