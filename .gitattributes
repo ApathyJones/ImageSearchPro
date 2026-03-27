@@ -1,0 +1,2 @@
+# Ensure .command files remain executable after checkout
+*.command diff=text eol=lf
