@@ -8717,6 +8717,9 @@ class ImageSearchApp(QMainWindow):
         ALBUM_THUMB = (_DIALOG_IMG_H - 10, _DIALOG_IMG_H - 10)
         COLS = 4
 
+        # Shared list of folders created during this session: [(path, base_name), ...]
+        created_folders: list[tuple[str, str]] = []
+
         for idx, info in enumerate(cluster_info):
             rep_idx = info["representative"]
             abs_path = self.image_paths[rep_idx]  # already absolute
@@ -8753,7 +8756,8 @@ class ImageSearchApp(QMainWindow):
                 rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self)
                 rename_dlg.exec()
 
-            def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup):
+            def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
+                              _created=created_folders):
                 """Create a subfolder and copy/move album images into it."""
                 paths = [self.image_paths[i] for i in members]
                 default_name = "No_Duplicates_Found" if no_dup else f"Album_{num}"
@@ -8796,6 +8800,133 @@ class ImageSearchApp(QMainWindow):
                 if errors:
                     summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
                 QMessageBox.information(dlg, "Done", summary)
+                # Track this folder for merging from other albums
+                _created.append((dest, name.strip()))
+
+            def merge_into_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
+                                  _created=created_folders):
+                """Merge this album's images into a previously created album folder."""
+                if not _created:
+                    QMessageBox.information(
+                        dlg, "No Folders Yet",
+                        "No album folders have been created yet in this session.\n\n"
+                        "Use <b>Create Folder</b> on an album first, then come back\n"
+                        "to merge other albums into it.")
+                    return
+
+                paths = [self.image_paths[i] for i in members]
+
+                # ── Folder picker dialog ──
+                pick_dlg = QDialog(dlg)
+                pick_dlg.setWindowTitle("Merge into Folder")
+                pick_dlg.resize(500, 340)
+                pick_dlg.setStyleSheet(_dlg_stylesheet())
+                _dark_title(pick_dlg)
+                pick_lay = QVBoxLayout(pick_dlg)
+                pick_lay.setContentsMargins(0, 0, 0, 0)
+                pick_lay.setSpacing(0)
+
+                pick_hdr = _make_panel(bottom_border=True)
+                pick_hdr_lay = QVBoxLayout(pick_hdr)
+                pick_hdr_lay.setContentsMargins(14, 10, 14, 10)
+                pick_hdr_lay.addWidget(QLabel(
+                    f"<b>Merge {len(paths)} file(s)</b> into an existing album folder.\n"
+                    "Select a folder, then choose to copy or move."))
+                pick_lay.addWidget(pick_hdr)
+
+                folder_list = QListWidget()
+                for folder_path, folder_name in _created:
+                    n_existing = len([f for f in os.listdir(folder_path)
+                                      if os.path.isfile(os.path.join(folder_path, f))]) \
+                                 if os.path.isdir(folder_path) else 0
+                    folder_list.addItem(
+                        f"{folder_name}  ({n_existing} files)  —  {folder_path}")
+                if folder_list.count() > 0:
+                    folder_list.setCurrentRow(0)
+                pick_lay.addWidget(folder_list, stretch=1)
+
+                # Rename checkbox
+                rename_cb = QCheckBox("Batch-rename files after merging (match folder naming)")
+                rename_cb.setChecked(True)
+                rename_cb.setStyleSheet(f"padding: 8px 14px;")
+                pick_lay.addWidget(rename_cb)
+
+                pick_foot = _make_panel()
+                pick_foot_lay = QHBoxLayout(pick_foot)
+                pick_foot_lay.setContentsMargins(12, 8, 12, 8)
+                pick_foot_lay.addStretch()
+                copy_btn = QPushButton("Copy into Folder")
+                _style_btn(copy_btn, "accent")
+                move_btn = QPushButton("Move into Folder")
+                _style_btn(move_btn, "danger")
+                cancel_btn = QPushButton("Cancel")
+                _style_btn(cancel_btn, "muted")
+                pick_foot_lay.addWidget(copy_btn)
+                pick_foot_lay.addWidget(move_btn)
+                pick_foot_lay.addWidget(cancel_btn)
+                pick_lay.addWidget(pick_foot)
+
+                pick_result = {"action": None}
+
+                def _accept_copy():
+                    pick_result["action"] = "copy"
+                    pick_dlg.accept()
+
+                def _accept_move():
+                    pick_result["action"] = "move"
+                    pick_dlg.accept()
+
+                copy_btn.clicked.connect(_accept_copy)
+                move_btn.clicked.connect(_accept_move)
+                cancel_btn.clicked.connect(pick_dlg.reject)
+
+                if pick_dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                sel_row = folder_list.currentRow()
+                if sel_row < 0:
+                    return
+                dest_path, dest_name = _created[sel_row]
+                do_move = (pick_result["action"] == "move")
+
+                if not os.path.isdir(dest_path):
+                    QMessageBox.warning(dlg, "Folder Missing",
+                        f"The folder no longer exists:\n{dest_path}")
+                    return
+
+                # ── Copy/move files ──
+                import shutil
+                ok_count, errors = 0, []
+                landed_paths = []
+                for p in paths:
+                    target = os.path.join(dest_path, os.path.basename(p))
+                    try:
+                        if do_move:
+                            shutil.move(p, target)
+                        else:
+                            shutil.copy2(p, target)
+                        ok_count += 1
+                        landed_paths.append(target)
+                    except Exception as e:
+                        errors.append(f"{os.path.basename(p)}: {e}")
+
+                action = "Moved" if do_move else "Copied"
+                summary = f"{action} {ok_count}/{len(paths)} files into:\n{dest_path}"
+                if errors:
+                    summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
+                QMessageBox.information(dlg, "Done", summary)
+
+                # ── Optional batch rename ──
+                if rename_cb.isChecked() and landed_paths:
+                    rename_dlg = BatchRenameDialog(
+                        dlg,
+                        # Rename ALL files in the folder so numbering is consistent
+                        sorted(
+                            [os.path.join(dest_path, f) for f in os.listdir(dest_path)
+                             if os.path.isfile(os.path.join(dest_path, f))]),
+                        suggested=dest_name,
+                        app=self,
+                    )
+                    rename_dlg.exec()
 
             # ── Build thumbnail ──
             pixmap = None
@@ -8825,6 +8956,7 @@ class ImageSearchApp(QMainWindow):
                 buttons=[
                     ("View Album", "accent", view_album),
                     ("Create Folder", "muted", create_folder),
+                    ("Merge into Folder\u2026", "muted", merge_into_folder),
                     ("Rename\u2026", "muted", rename_album),
                 ],
             )
