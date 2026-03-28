@@ -8577,7 +8577,6 @@ class ImageSearchApp(QMainWindow):
 
             # ── Callbacks (defined before card so they can be passed) ──
             def view_album(members=info["members"], num=album_num, no_dup=is_no_dup):
-                dlg.accept()
                 self.cancel_search(clear_ui=True)
                 album_results = [
                     (1.0, self.image_paths[i], "image", {})
@@ -8690,11 +8689,13 @@ class ImageSearchApp(QMainWindow):
         alb_foot_lay.addStretch()
         close_btn = QPushButton("Close")
         _style_btn(close_btn, "muted")
-        close_btn.clicked.connect(dlg.accept)
+        close_btn.clicked.connect(dlg.close)
         alb_foot_lay.addWidget(close_btn)
         layout.addWidget(albums_footer)
 
-        dlg.exec()
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+        self._smart_albums_dlg = dlg
 
 
     # ── NudeNet NSFW scanning ──────────────────────────────────────────────────
