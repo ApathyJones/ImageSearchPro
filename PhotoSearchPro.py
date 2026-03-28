@@ -10105,38 +10105,54 @@ if __name__ == "__main__":
     app.setStyleSheet(DARK_QSS)
 
     # ── Application icon ──────────────────────────────────────────────────
-    # Build a simple branded icon so the taskbar and window title show the
-    # app's own icon rather than the generic Python interpreter icon.
+    # Build a branded icon so the taskbar and window title show the app's
+    # own icon instead of the generic Python interpreter icon.
+    # Windows taskbar requires multiple sizes (16–256) in the QIcon;
+    # a single large pixmap is ignored for the small taskbar slot.
     _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                               'photosearchpro.ico')
     if os.path.isfile(_icon_path):
         _app_icon = QIcon(_icon_path)
     else:
-        # Fallback: generate a simple icon at runtime (magnifying-glass motif)
+        # Fallback: generate a magnifying-glass icon at each required size
         from PyQt6.QtGui import QPixmap, QPainter, QPen, QBrush, QColor, QFont
         from PyQt6.QtCore import Qt, QPoint, QRect
-        _pm = QPixmap(256, 256)
-        _pm.fill(QColor(0, 0, 0, 0))
-        _p = QPainter(_pm)
-        _p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        # Lens circle
-        _p.setPen(QPen(QColor(ACCENT_SECONDARY), 22))
-        _p.setBrush(QBrush(QColor(28, 34, 48, 180)))
-        _p.drawEllipse(30, 20, 150, 150)
-        # Handle
-        _p.setPen(QPen(QColor(ACCENT_SECONDARY), 26, Qt.PenStyle.SolidLine,
-                        Qt.PenCapStyle.RoundCap))
-        _p.drawLine(QPoint(160, 155), QPoint(225, 225))
-        # "AI" text inside lens
-        _f = QFont("Arial", 42, QFont.Weight.Bold)
-        _p.setFont(_f)
-        _p.setPen(QPen(QColor(ACCENT_GLOW)))
-        _p.drawText(QRect(30, 20, 150, 150), Qt.AlignmentFlag.AlignCenter, "AI")
-        _p.end()
-        _app_icon = QIcon(_pm)
+
+        def _render_icon(sz):
+            pm = QPixmap(sz, sz)
+            pm.fill(QColor(0, 0, 0, 0))
+            p = QPainter(pm)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            s = sz / 256.0  # scale factor
+            # Lens circle
+            p.setPen(QPen(QColor(ACCENT_SECONDARY), max(2, int(22 * s))))
+            p.setBrush(QBrush(QColor(28, 34, 48, 180)))
+            p.drawEllipse(int(30 * s), int(20 * s),
+                          int(150 * s), int(150 * s))
+            # Handle
+            p.setPen(QPen(QColor(ACCENT_SECONDARY),
+                          max(2, int(26 * s)),
+                          Qt.PenStyle.SolidLine,
+                          Qt.PenCapStyle.RoundCap))
+            p.drawLine(QPoint(int(160 * s), int(155 * s)),
+                       QPoint(int(225 * s), int(225 * s)))
+            # "AI" text inside lens
+            f = QFont("Arial", max(6, int(42 * s)), QFont.Weight.Bold)
+            p.setFont(f)
+            p.setPen(QPen(QColor(ACCENT_GLOW)))
+            p.drawText(QRect(int(30 * s), int(20 * s),
+                             int(150 * s), int(150 * s)),
+                       Qt.AlignmentFlag.AlignCenter, "AI")
+            p.end()
+            return pm
+
+        _app_icon = QIcon()
+        for _sz in (16, 24, 32, 48, 64, 128, 256):
+            _app_icon.addPixmap(_render_icon(_sz))
     app.setWindowIcon(_app_icon)
 
     window = ImageSearchApp()
+    window.setWindowIcon(_app_icon)
     window.show()
     sys.exit(app.exec())
 
