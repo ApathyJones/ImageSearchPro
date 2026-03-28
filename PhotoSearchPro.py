@@ -2764,7 +2764,8 @@ class BatchRenameDialog(QDialog):
             default_idx = self._naming_model_keys.index(app.active_model_key)
         self._naming_combo.setCurrentIndex(default_idx)
         suggest_row.addWidget(self._naming_combo)
-        suggest_btn = QPushButton("Suggest Name")
+        self._suggest_btn = QPushButton("Suggest Name")
+        suggest_btn = self._suggest_btn
         _style_btn(suggest_btn, "accent")
         suggest_btn.setToolTip(
             "Loads the selected naming model and scores each checked category")
@@ -2946,6 +2947,8 @@ class BatchRenameDialog(QDialog):
     def _run_auto_name(self):
         if self._app is None:
             return
+        if getattr(self, '_suggest_running', False):
+            return
         enabled = [name for name, cb in self._cat_checkboxes.items() if cb.isChecked()]
         enabled += [name for name, cb in self._custom_cat_checkboxes.items() if cb.isChecked()]
         if not enabled:
@@ -2956,13 +2959,31 @@ class BatchRenameDialog(QDialog):
         if idx < 0 or idx >= len(self._naming_model_keys):
             return
         naming_key = self._naming_model_keys[idx]
-        self._suggest_status.setText("Loading model & scoring…")
-        self._suggest_status.repaint()
-        best = self._app._auto_name_with_model(
-            self._file_paths, naming_key, enabled_cats=enabled)
+        self._suggest_running = True
+        self._suggest_btn.setEnabled(False)
+        self._suggest_status.setText("Starting…")
+
+        def _progress(msg):
+            self._app._safe_after(0, lambda: self._suggest_status.setText(msg))
+
+        def _worker():
+            try:
+                result = self._app._auto_name_with_model(
+                    self._file_paths, naming_key,
+                    enabled_cats=enabled, progress_cb=_progress)
+            except Exception as e:
+                safe_print(f"[RENAME] Suggest name error: {e}")
+                result = ""
+            self._app._safe_after(0, lambda: self._on_suggest_done(result))
+
+        Thread(target=_worker, daemon=True).start()
+
+    def _on_suggest_done(self, result):
+        self._suggest_running = False
+        self._suggest_btn.setEnabled(True)
         self._suggest_status.setText("")
-        if best:
-            self._name_edit.setText(best)
+        if result:
+            self._name_edit.setText(result)
 
     # ── Core rename ───────────────────────────────────────────────────────────
 
@@ -7271,7 +7292,7 @@ class ImageSearchApp(QMainWindow):
         best_label, _margin = self._score_single_category(group_emb, category_name, labels, model=specialist)
         return best_label
 
-    def _auto_name_composite(self, file_paths, enabled_cats=None):
+    def _auto_name_composite(self, file_paths, enabled_cats=None, progress_cb=None):
         """Score built-in (and custom) categories and combine the confident
         winners into a descriptive multi-word name such as "Beach Midday Purple Bikini".
 
@@ -7280,10 +7301,16 @@ class ImageSearchApp(QMainWindow):
         combined in confidence order.
 
         enabled_cats: optional list of category names to score; None means all.
+        *progress_cb*: optional callable(str) for progress updates.
         """
+        def _prog(msg):
+            if progress_cb:
+                progress_cb(msg)
+
         if self.clip_model is None or self.image_embeddings is None:
             return ""
 
+        _prog("Computing group embedding…")
         result = self._get_group_embedding(file_paths)
         if result is None:
             return ""
@@ -7301,16 +7328,19 @@ class ImageSearchApp(QMainWindow):
         for cat_name in all_cats:
             model_key = CATEGORY_MODEL_MAP.get(cat_name)
             if model_key and model_key not in specialist_embs:
+                _prog(f"Loading specialist: {cat_name}…")
                 spec_model = self._get_specialist_model(cat_name)
                 if spec_model is not None:
+                    _prog(f"Encoding for {cat_name}…")
                     emb = self._encode_group_with_model(file_paths, spec_model)
                     if emb is not None:
                         specialist_embs[model_key] = emb
 
+        cat_list = [(n, l) for n, l in all_cats.items() if l]
         scored = []   # (margin, cat_name, best_label)
-        for cat_name, labels in all_cats.items():
-            if not labels:
-                continue
+        for i, (cat_name, labels) in enumerate(cat_list):
+            pct = int((i + 1) / len(cat_list) * 100)
+            _prog(f"Scoring: {cat_name} ({pct}%)")
             model_key = CATEGORY_MODEL_MAP.get(cat_name)
             specialist = self._specialist_models.get(model_key) if model_key else None
             cat_emb = specialist_embs.get(model_key, group_emb)
@@ -7330,19 +7360,27 @@ class ImageSearchApp(QMainWindow):
 
         return " ".join(parts)
 
-    def _auto_name_with_model(self, file_paths, naming_model_key, enabled_cats=None):
+    def _auto_name_with_model(self, file_paths, naming_model_key,
+                              enabled_cats=None, progress_cb=None):
         """Score categories using a specific text-capable model.
 
         If the requested model is the active main model and embeddings exist,
         delegates to the normal ``_auto_name_composite``.  Otherwise loads the
         naming model (cached in ``_specialist_models``), re-encodes the album
         images with it, and runs the category scoring.
+
+        *progress_cb*: optional callable(str) for progress updates.
         """
+        def _prog(msg):
+            if progress_cb:
+                progress_cb(msg)
+
         # Fast path: naming model is the active model and we already have embeddings
         if (naming_model_key == self.active_model_key
                 and self.clip_model is not None
                 and self.image_embeddings is not None):
-            return self._auto_name_composite(file_paths, enabled_cats=enabled_cats)
+            return self._auto_name_composite(
+                file_paths, enabled_cats=enabled_cats, progress_cb=progress_cb)
 
         # Load (or reuse cached) naming model
         if naming_model_key in self._specialist_models:
@@ -7350,6 +7388,7 @@ class ImageSearchApp(QMainWindow):
         else:
             try:
                 label = MODEL_REGISTRY[naming_model_key]["label"]
+                _prog(f"Loading {label}…")
                 safe_print(f"[RENAME] Loading naming model '{label}'…")
                 naming_model = create_model(naming_model_key)
                 self._specialist_models[naming_model_key] = naming_model
@@ -7359,6 +7398,8 @@ class ImageSearchApp(QMainWindow):
                 return ""
 
         # Encode album images with the naming model
+        n_images = len(file_paths)
+        _prog(f"Encoding {n_images} images…")
         group_emb = self._encode_group_with_model(file_paths, naming_model)
         if group_emb is None:
             return ""
@@ -7374,16 +7415,19 @@ class ImageSearchApp(QMainWindow):
         for cat_name in all_cats:
             model_key = CATEGORY_MODEL_MAP.get(cat_name)
             if model_key and model_key not in specialist_embs:
+                _prog(f"Loading specialist: {cat_name}…")
                 spec_model = self._get_specialist_model(cat_name)
                 if spec_model is not None:
+                    _prog(f"Encoding for {cat_name}…")
                     emb = self._encode_group_with_model(file_paths, spec_model)
                     if emb is not None:
                         specialist_embs[model_key] = emb
 
+        cat_list = [(n, l) for n, l in all_cats.items() if l]
         scored = []
-        for cat_name, labels in all_cats.items():
-            if not labels:
-                continue
+        for i, (cat_name, labels) in enumerate(cat_list):
+            pct = int((i + 1) / len(cat_list) * 100)
+            _prog(f"Scoring: {cat_name} ({pct}%)")
             model_key = CATEGORY_MODEL_MAP.get(cat_name)
             specialist = self._specialist_models.get(model_key) if model_key else None
             cat_emb = specialist_embs.get(model_key, group_emb)
