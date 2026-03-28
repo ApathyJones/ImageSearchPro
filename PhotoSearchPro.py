@@ -3454,6 +3454,15 @@ class ImageSearchApp(QMainWindow):
         btn_faces.clicked.connect(self.on_face_presets)
         toolbar_layout.addWidget(btn_faces)
 
+        btn_lora = QPushButton("LORA Curator")
+        btn_lora.setToolTip(
+            "Select the best photos of a person for LORA training.\n"
+            "Scores images by face quality, sharpness, resolution & diversity.\n"
+            "Requires InsightFace — pip install insightface onnxruntime"
+        )
+        btn_lora.clicked.connect(self.on_lora_curator)
+        toolbar_layout.addWidget(btn_lora)
+
         toolbar_layout.addSpacing(4)
 
         self.status_label = QLabel("Starting...")
@@ -10059,6 +10068,621 @@ class ImageSearchApp(QMainWindow):
             safe_print(f"[FACE] Search error: {e}")
             import traceback; traceback.print_exc()
             self._safe_after(0, lambda: self.update_status("Face search failed", "red"))
+
+
+    # --- Feature: LORA Dataset Curator -------------------------------------------
+
+    def _lora_score_image(self, path, face_app):
+        """Score a single image for LORA training suitability.
+
+        Returns a dict with individual metric scores, composite score,
+        and human-readable reason lists.
+        """
+        import cv2
+
+        result = {
+            "path": path,
+            "face_confidence": 0.0,
+            "face_size_ratio": 0.0,
+            "sharpness": 0.0,
+            "resolution": 0.0,
+            "composite": 0.0,
+            "has_face": False,
+            "reject_reasons": [],
+            "select_reasons": [],
+        }
+
+        pil_img = open_image(path)
+        if pil_img is None:
+            result["reject_reasons"].append("Could not open image")
+            return result
+
+        w, h = pil_img.size
+        total_pixels = w * h
+
+        # Resolution score: target 512x512 = 262144 pixels minimum
+        res_score = min(total_pixels / 262144.0, 1.0)
+        result["resolution"] = res_score
+        if res_score < 0.3:
+            result["reject_reasons"].append("Resolution too low")
+        elif res_score >= 0.7:
+            result["select_reasons"].append("High resolution")
+
+        # Face detection
+        img_bgr = np.array(pil_img.convert("RGB"))[:, :, ::-1]
+        faces = face_app.get(img_bgr)
+
+        if not faces:
+            result["reject_reasons"].append("No face detected")
+            return result
+
+        # Pick the largest face
+        face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+        result["has_face"] = True
+
+        # Face confidence
+        det_score = float(face.det_score)
+        result["face_confidence"] = det_score
+        if det_score < 0.3:
+            result["reject_reasons"].append("Face detection confidence too low")
+            return result
+        elif det_score >= 0.85:
+            result["select_reasons"].append("Clear face detected")
+
+        # Face size ratio
+        x1, y1, x2, y2 = face.bbox
+        face_area = (x2 - x1) * (y2 - y1)
+        size_ratio = face_area / total_pixels if total_pixels > 0 else 0
+        # Normalize: 0.02 = min useful, 0.15+ = excellent
+        size_score = min(max((size_ratio - 0.01) / 0.14, 0.0), 1.0)
+        result["face_size_ratio"] = size_score
+        if size_ratio < 0.02:
+            result["reject_reasons"].append("Face too small in frame")
+        elif size_ratio >= 0.05:
+            result["select_reasons"].append("Good face size")
+
+        # Sharpness (Laplacian variance on face crop)
+        fx1 = max(0, int(x1))
+        fy1 = max(0, int(y1))
+        fx2 = min(img_bgr.shape[1], int(x2))
+        fy2 = min(img_bgr.shape[0], int(y2))
+        face_crop = img_bgr[fy1:fy2, fx1:fx2]
+        if face_crop.size > 0:
+            gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            sharp_score = min(lap_var / 500.0, 1.0)
+        else:
+            sharp_score = 0.0
+        result["sharpness"] = sharp_score
+        if sharp_score < 0.15:
+            result["reject_reasons"].append("Image appears blurry")
+        elif sharp_score >= 0.4:
+            result["select_reasons"].append("Sharp image")
+
+        # Composite score (weighted combination)
+        composite = (
+            0.30 * det_score +
+            0.25 * size_score +
+            0.25 * sharp_score +
+            0.20 * res_score
+        )
+        result["composite"] = composite
+
+        return result
+
+    def _lora_select_diverse(self, scores, embeddings, image_paths, k):
+        """Select k images balancing quality and diversity using greedy MMR.
+
+        Args:
+            scores: list of score dicts from _lora_score_image
+            embeddings: numpy array of CLIP embeddings for indexed images
+            image_paths: list of image paths (indexed)
+            k: number of images to select
+
+        Returns:
+            (selected_indices, rejected_indices) — indices into the scores list
+        """
+        # Build mapping from path to embedding index
+        path_to_emb_idx = {p: i for i, p in enumerate(image_paths)}
+
+        # Filter to candidates with faces
+        candidates = []
+        hard_rejects = []
+        for i, s in enumerate(scores):
+            if s["has_face"] and s["face_confidence"] >= 0.3:
+                candidates.append(i)
+            else:
+                hard_rejects.append(i)
+
+        if not candidates:
+            return [], list(range(len(scores)))
+
+        k = min(k, len(candidates))
+
+        # Get embeddings for candidates
+        cand_emb_indices = []
+        for i in candidates:
+            emb_idx = path_to_emb_idx.get(scores[i]["path"])
+            cand_emb_indices.append(emb_idx)
+
+        # Greedy MMR selection
+        selected = []
+        remaining = list(range(len(candidates)))
+
+        # First pick: highest composite score
+        best_first = max(remaining, key=lambda r: scores[candidates[r]]["composite"])
+        selected.append(best_first)
+        remaining.remove(best_first)
+
+        quality_weight = 0.6
+        diversity_weight = 0.4
+
+        for _ in range(k - 1):
+            if not remaining:
+                break
+
+            best_score = -1.0
+            best_r = remaining[0]
+
+            # Get embeddings of already selected
+            sel_emb_indices = [cand_emb_indices[s] for s in selected]
+            sel_embs = []
+            for idx in sel_emb_indices:
+                if idx is not None and idx < len(embeddings):
+                    sel_embs.append(embeddings[idx])
+            if sel_embs:
+                sel_emb_matrix = np.array(sel_embs)
+
+            for r in remaining:
+                quality = scores[candidates[r]]["composite"]
+                emb_idx = cand_emb_indices[r]
+
+                if emb_idx is not None and emb_idx < len(embeddings) and sel_embs:
+                    cand_emb = embeddings[emb_idx]
+                    # Min cosine similarity to any already-selected image
+                    sims = sel_emb_matrix @ cand_emb
+                    min_sim = float(np.max(sims))  # max sim = least diverse
+                    diversity = 1.0 - min_sim  # higher = more diverse
+                else:
+                    diversity = 0.5  # neutral if no embedding
+
+                mmr_score = quality_weight * quality + diversity_weight * diversity
+                if mmr_score > best_score:
+                    best_score = mmr_score
+                    best_r = r
+
+            selected.append(best_r)
+            remaining.remove(best_r)
+
+        # Map back to score indices
+        selected_indices = [candidates[s] for s in selected]
+        rejected_candidates = [candidates[r] for r in remaining]
+
+        # Add diversity note to selected images
+        for i, sel_idx in enumerate(selected_indices):
+            if i == 0:
+                scores[sel_idx]["select_reasons"].append("Highest quality score")
+            else:
+                scores[sel_idx]["select_reasons"].append("Adds variety to set")
+
+        # Ensure rejected candidates have a reason
+        for idx in rejected_candidates:
+            if not scores[idx]["reject_reasons"]:
+                scores[idx]["reject_reasons"].append("Not selected — higher quality alternatives available")
+
+        rejected_indices = hard_rejects + rejected_candidates
+        return selected_indices, rejected_indices
+
+    def on_lora_curator(self):
+        """Show the LORA Dataset Curator configuration dialog."""
+        if self.image_embeddings is None or len(self.image_paths) < 2:
+            QMessageBox.warning(self, "Not Ready", "Please index images first.")
+            return
+        if self.is_indexing:
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
+            return
+
+        n_images = len(self.image_paths)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("LORA Dataset Curator")
+        dlg.setFixedSize(480, 380)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel(
+            "<b>LORA Dataset Curator</b> — AI-powered training set builder<br>"
+            f"<span style='font-size:8pt;color:{FG_MUTED};'>"
+            "Selects the best photos for LORA training based on face quality, "
+            "sharpness, resolution & visual diversity.</span>"))
+        layout.addWidget(hdr)
+
+        # Body
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 12, 14, 12)
+        body_lay.setSpacing(10)
+
+        # Number of photos
+        n_row = QHBoxLayout()
+        n_row.setSpacing(8)
+        n_lbl = QLabel("Number of photos to select:")
+        n_lbl.setStyleSheet(f"color: {FG};")
+        n_spin = QSpinBox()
+        n_spin.setRange(1, min(500, n_images))
+        n_spin.setValue(min(20, n_images))
+        n_spin.setFixedWidth(70)
+        n_row.addWidget(n_lbl)
+        n_row.addWidget(n_spin)
+        n_row.addStretch()
+        body_lay.addLayout(n_row)
+
+        # Output folder
+        out_row = QHBoxLayout()
+        out_row.setSpacing(8)
+        out_lbl = QLabel("Output folder:")
+        out_lbl.setStyleSheet(f"color: {FG};")
+        out_edit = QLineEdit()
+        default_out = os.path.join(
+            os.path.dirname(self.image_paths[0]) if self.image_paths else "",
+            "lora_dataset")
+        out_edit.setText(default_out)
+        out_edit.setPlaceholderText("Path to output folder")
+        browse_btn = QPushButton("Browse…")
+        _style_btn(browse_btn, "secondary")
+        browse_btn.setFixedWidth(80)
+
+        def pick_folder():
+            folder = QFileDialog.getExistingDirectory(dlg, "Select Output Folder")
+            if folder:
+                out_edit.setText(folder)
+        browse_btn.clicked.connect(pick_folder)
+
+        out_row.addWidget(out_lbl)
+        out_row.addWidget(out_edit, stretch=1)
+        out_row.addWidget(browse_btn)
+        body_lay.addLayout(out_row)
+
+        # Photo naming
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        name_lbl = QLabel("Photo naming prefix:")
+        name_lbl.setStyleSheet(f"color: {FG};")
+        name_edit = QLineEdit()
+        name_edit.setText("lora")
+        name_edit.setPlaceholderText("e.g. 'lora' → lora_001.jpg")
+        name_hint = QLabel(f"<span style='color:{FG_MUTED};font-size:8pt;'>"
+                           "Files will be named prefix_001, prefix_002, …</span>")
+        name_row.addWidget(name_lbl)
+        name_row.addWidget(name_edit, stretch=1)
+        body_lay.addLayout(name_row)
+        body_lay.addWidget(name_hint)
+
+        count_lbl = QLabel(f"{n_images:,} indexed images will be analyzed")
+        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(count_lbl)
+        body_lay.addStretch()
+        layout.addWidget(body, stretch=1)
+
+        # Footer
+        def start_curation():
+            k = n_spin.value()
+            output_dir = out_edit.text().strip()
+            prefix = name_edit.text().strip() or "lora"
+            if not output_dir:
+                QMessageBox.warning(dlg, "Missing Path",
+                    "Please specify an output folder.")
+                return
+            dlg.accept()
+            self.update_status("LORA Curator: analyzing images…", "orange")
+            self.progress.setRange(0, 0)
+            self.progress_label.setText("Initializing face detection…")
+            Thread(
+                target=lambda: self._lora_curator_worker(k, output_dir, prefix),
+                daemon=True
+            ).start()
+
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+        curate_btn = QPushButton("Curate Dataset")
+        cancel_btn = QPushButton("Cancel")
+        _style_btn(curate_btn, "accent")
+        _style_btn(cancel_btn, "muted")
+        curate_btn.clicked.connect(start_curation)
+        cancel_btn.clicked.connect(dlg.reject)
+        foot_lay.addStretch()
+        foot_lay.addWidget(curate_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
+
+        dlg.exec()
+
+    def _lora_curator_worker(self, k, output_dir, prefix):
+        """Background thread: score all images, select best k, report results."""
+        try:
+            # Load InsightFace
+            try:
+                face_app = self._get_face_app()
+            except RuntimeError as e:
+                err_msg = str(e)
+                self._safe_after(0, lambda: self.progress.setRange(0, 100))
+                self._safe_after(0, lambda: self.progress.setValue(0))
+                self._safe_after(0, lambda: self.progress_label.setText(""))
+                self._safe_after(0, lambda: self.update_status("LORA Curator failed", "red"))
+                self._safe_after(0, lambda: QMessageBox.critical(
+                    self, "Missing Dependency", err_msg))
+                return
+
+            n = len(self.image_paths)
+            safe_print(f"[LORA] Scoring {n:,} images…")
+
+            # Score all images
+            scores = []
+            self._safe_after(0, lambda: self.progress.setRange(0, n))
+            for i, abs_path in enumerate(self.image_paths):
+                score = self._lora_score_image(abs_path, face_app)
+                scores.append(score)
+                if i % 10 == 0:
+                    pct = i + 1
+                    self._safe_after(0, lambda v=pct: self.progress.setValue(v))
+                    self._safe_after(0, lambda v=pct, tot=n:
+                        self.progress_label.setText(f"Scoring images… {v:,} / {tot:,}"))
+
+            safe_print(f"[LORA] Scoring complete. Selecting {k} diverse images…")
+            self._safe_after(0, lambda: self.progress_label.setText("Selecting diverse set…"))
+
+            # Select diverse set
+            selected_indices, rejected_indices = self._lora_select_diverse(
+                scores, self.image_embeddings, self.image_paths, k)
+
+            n_sel = len(selected_indices)
+            n_rej = len(rejected_indices)
+            safe_print(f"[LORA] Selected {n_sel}, rejected {n_rej}")
+
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(100))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+            self._safe_after(0, lambda: self.update_status(
+                f"LORA Curator: {n_sel} photos selected from {n:,}", "green"))
+            self._safe_after(0, lambda: self._open_lora_results_dialog(
+                scores, selected_indices, rejected_indices, output_dir, prefix))
+
+        except Exception as e:
+            safe_print(f"[LORA] Error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+            self._safe_after(0, lambda: self.update_status("LORA Curator failed", "red"))
+
+    def _open_lora_results_dialog(self, scores, selected_indices, rejected_indices,
+                                   output_dir, prefix):
+        """Display curation results in a two-group dialog with per-image explanations."""
+        n_sel = len(selected_indices)
+        n_rej = len(rejected_indices)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"LORA Curator — {n_sel} Selected")
+        dlg.resize(960, 700)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        main_layout = QVBoxLayout(dlg)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Header
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel(
+            f"<b>LORA Curation Results</b> — {n_sel} selected from "
+            f"{n_sel + n_rej} images"))
+        main_layout.addWidget(hdr)
+
+        # Scrollable body
+        body_scroll = QScrollArea()
+        body_scroll.setWidgetResizable(True)
+        body_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        body_widget = QWidget()
+        body_layout = QVBoxLayout(body_widget)
+        body_layout.setContentsMargins(10, 10, 20, 10)
+        body_layout.setSpacing(6)
+        body_scroll.setWidget(body_widget)
+        main_layout.addWidget(body_scroll, stretch=1)
+
+        THUMB_SIZE = (_DIALOG_IMG_H - 10, _DIALOG_IMG_H - 10)
+        COLS = 4
+
+        def _build_explanation(score_dict, is_selected):
+            """Build a short explanation string for a scored image."""
+            if is_selected:
+                reasons = score_dict.get("select_reasons", [])
+                if reasons:
+                    return " · ".join(reasons[:3])
+                return f"Score: {score_dict['composite']:.2f}"
+            else:
+                reasons = score_dict.get("reject_reasons", [])
+                if reasons:
+                    return " · ".join(reasons[:3])
+                return "Not selected"
+
+        def _make_image_card(score_dict, is_selected, parent_grid, row, col):
+            """Create a single image card with thumbnail and explanation."""
+            card = QFrame()
+            card.setStyleSheet(
+                f"QFrame {{ background: {CARD_BG}; border: 1px solid {BORDER};"
+                f" border-radius: 10px; }}"
+                f"QLabel {{ border: none; background: transparent; }}")
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(6, 6, 6, 6)
+            card_lay.setSpacing(4)
+
+            # Thumbnail
+            img_label = ClickableImageLabel()
+            img_label.setFixedSize(THUMB_SIZE[0], THUMB_SIZE[1])
+            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            path = score_dict["path"]
+            try:
+                pil_img = open_image(path)
+                if pil_img is not None:
+                    pil_img.thumbnail((THUMB_SIZE[0], THUMB_SIZE[1]), Image.Resampling.LANCZOS)
+                    data = pil_img.tobytes("raw", "RGB")
+                    qimg = QImage(data, pil_img.width, pil_img.height,
+                                  3 * pil_img.width, QImage.Format.Format_RGB888)
+                    pm = QPixmap.fromImage(qimg)
+                    img_label.setPixmap(pm)
+            except Exception:
+                img_label.setText("?")
+
+            def _open_path(p=path):
+                self.open_image_viewer(p)
+            img_label._on_click = _open_path
+            card_lay.addWidget(img_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+            # Score badge
+            composite = score_dict["composite"]
+            if is_selected:
+                badge_color = ACCENT
+                badge_text = f"Score: {composite:.2f}"
+            else:
+                badge_color = FG_MUTED
+                badge_text = f"Score: {composite:.2f}" if score_dict["has_face"] else "No face"
+            badge = QLabel(badge_text)
+            badge.setStyleSheet(
+                f"color: {badge_color}; font-size: 7pt; font-weight: 600;")
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            card_lay.addWidget(badge)
+
+            # Explanation text
+            explanation = _build_explanation(score_dict, is_selected)
+            exp_label = QLabel(explanation)
+            exp_label.setWordWrap(True)
+            exp_label.setStyleSheet(
+                f"color: {FG_MUTED}; font-size: 7pt;")
+            exp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            exp_label.setMaximumHeight(36)
+            card_lay.addWidget(exp_label)
+
+            # Filename
+            fname = os.path.basename(path)
+            if len(fname) > 25:
+                fname = fname[:22] + "…"
+            name_label = QLabel(fname)
+            name_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 7pt;")
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setToolTip(os.path.basename(path))
+            card_lay.addWidget(name_label)
+
+            parent_grid.addWidget(card, row, col)
+
+        # ── Selected group ────────────────────────────────────────────────
+        sel_header = QLabel(
+            f"<b style='color:{ACCENT};'>✓ Selected for Training ({n_sel} photos)</b>")
+        sel_header.setStyleSheet(f"font-size: 10pt; padding: 6px 4px;")
+        body_layout.addWidget(sel_header)
+
+        sel_grid_widget = QWidget()
+        sel_grid = QGridLayout(sel_grid_widget)
+        sel_grid.setSpacing(8)
+        sel_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        for idx, score_idx in enumerate(selected_indices):
+            row, col = divmod(idx, COLS)
+            _make_image_card(scores[score_idx], True, sel_grid, row, col)
+
+        body_layout.addWidget(sel_grid_widget)
+
+        # ── Rejected group (collapsed by default) ─────────────────────────
+        rej_toggle = QPushButton(f"▶ Not Selected ({n_rej} photos) — click to expand")
+        rej_toggle.setStyleSheet(
+            f"QPushButton {{ color: {FG_MUTED}; background: {SURFACE};"
+            f" border: 1px solid {BORDER}; border-radius: 8px;"
+            f" padding: 8px 14px; font-size: 9pt; text-align: left; }}"
+            f"QPushButton:hover {{ background: {CARD_BG}; border-color: {BORDER_MID}; }}")
+        rej_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        rej_container = QWidget()
+        rej_container_lay = QVBoxLayout(rej_container)
+        rej_container_lay.setContentsMargins(0, 0, 0, 0)
+        rej_container.setVisible(False)
+
+        rej_grid_widget = QWidget()
+        rej_grid = QGridLayout(rej_grid_widget)
+        rej_grid.setSpacing(8)
+        rej_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+
+        # Lazy-build rejected cards on first expand
+        rej_built = {"done": False}
+
+        def _toggle_rejected():
+            visible = not rej_container.isVisible()
+            rej_container.setVisible(visible)
+            if visible:
+                rej_toggle.setText(f"▼ Not Selected ({n_rej} photos) — click to collapse")
+                if not rej_built["done"]:
+                    for idx, score_idx in enumerate(rejected_indices):
+                        row, col = divmod(idx, COLS)
+                        _make_image_card(scores[score_idx], False, rej_grid, row, col)
+                    rej_built["done"] = True
+            else:
+                rej_toggle.setText(f"▶ Not Selected ({n_rej} photos) — click to expand")
+
+        rej_toggle.clicked.connect(_toggle_rejected)
+        rej_container_lay.addWidget(rej_grid_widget)
+
+        body_layout.addWidget(rej_toggle)
+        body_layout.addWidget(rej_container)
+        body_layout.addStretch()
+
+        # ── Footer ────────────────────────────────────────────────────────
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+
+        def _export_selected():
+            """Copy selected images to output folder with sequential naming."""
+            os.makedirs(output_dir, exist_ok=True)
+            ok_count, errors = 0, []
+            for i, score_idx in enumerate(selected_indices):
+                src = scores[score_idx]["path"]
+                ext = os.path.splitext(src)[1].lower() or ".jpg"
+                dst_name = f"{prefix}_{i + 1:03d}{ext}"
+                dst = os.path.join(output_dir, dst_name)
+                try:
+                    shutil.copy2(src, dst)
+                    ok_count += 1
+                except Exception as e:
+                    errors.append(f"{dst_name}: {e}")
+            summary = f"Exported {ok_count}/{n_sel} photos to:\n{output_dir}"
+            if errors:
+                summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
+            QMessageBox.information(dlg, "Export Complete", summary)
+            self.update_status(
+                f"LORA dataset exported: {ok_count} photos → {output_dir}", "green")
+
+        export_btn = QPushButton("Export Selected to Folder")
+        close_btn = QPushButton("Close")
+        _style_btn(export_btn, "accent")
+        _style_btn(close_btn, "muted")
+        export_btn.clicked.connect(_export_selected)
+        close_btn.clicked.connect(dlg.reject)
+        foot_lay.addStretch()
+        foot_lay.addWidget(export_btn)
+        foot_lay.addWidget(close_btn)
+        main_layout.addWidget(footer)
+
+        self._lora_curator_dlg = dlg
+        dlg.exec()
 
 
 if __name__ == "__main__":
