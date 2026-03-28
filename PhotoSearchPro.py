@@ -2746,13 +2746,33 @@ class BatchRenameDialog(QDialog):
         select_all_btn.clicked.connect(lambda: [cb.setChecked(True)  for cb in _all_cbs()])
         select_none_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in _all_cbs()])
 
+        # ── Naming model selector + Suggest button ──────────────────────
         suggest_row = QHBoxLayout()
+        model_lbl = QLabel("Naming model:")
+        model_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 9pt; border: none;")
+        suggest_row.addWidget(model_lbl)
+        self._naming_combo = QComboBox()
+        self._naming_model_keys = []
+        for key, cfg in MODEL_REGISTRY.items():
+            if cfg.get("has_text") and not cfg.get("specialist_only"):
+                self._naming_model_keys.append(key)
+                active_tag = "  (active)" if (app and key == app.active_model_key) else ""
+                self._naming_combo.addItem(f"{cfg['label']}{active_tag}")
+        # Default to the active model if it has text, otherwise first text model
+        default_idx = 0
+        if app and app.active_model_key in self._naming_model_keys:
+            default_idx = self._naming_model_keys.index(app.active_model_key)
+        self._naming_combo.setCurrentIndex(default_idx)
+        suggest_row.addWidget(self._naming_combo)
         suggest_btn = QPushButton("Suggest Name")
         _style_btn(suggest_btn, "accent")
         suggest_btn.setToolTip(
-            "Scores each checked category and combines the top confident matches")
+            "Loads the selected naming model and scores each checked category")
         suggest_btn.clicked.connect(self._run_auto_name)
         suggest_row.addWidget(suggest_btn)
+        self._suggest_status = QLabel("")
+        self._suggest_status.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt; border: none;")
+        suggest_row.addWidget(self._suggest_status)
         suggest_row.addStretch()
         auto_layout.addLayout(suggest_row)
 
@@ -2790,14 +2810,9 @@ class BatchRenameDialog(QDialog):
         auto_layout.addWidget(new_cat_btn)
         auto_layout.addWidget(self._custom_frame)
 
-        has_text = (
-            app is not None
-            and app.clip_model is not None
-            and getattr(app, "model_has_text", False)
-        )
-        if not has_text:
+        if not self._naming_model_keys:
             suggest_btn.setEnabled(False)
-            suggest_btn.setToolTip("Auto-naming requires a text-capable model (CLIP or SigLIP2)")
+            suggest_btn.setToolTip("No text-capable models available")
 
         body_lay.addWidget(auto_frame)
 
@@ -2929,7 +2944,7 @@ class BatchRenameDialog(QDialog):
         QMessageBox.information(self, "Saved", f"Custom category '{cname}' saved.")
 
     def _run_auto_name(self):
-        if self._app is None or self._app.clip_model is None:
+        if self._app is None:
             return
         enabled = [name for name, cb in self._cat_checkboxes.items() if cb.isChecked()]
         enabled += [name for name, cb in self._custom_cat_checkboxes.items() if cb.isChecked()]
@@ -2937,7 +2952,15 @@ class BatchRenameDialog(QDialog):
             QMessageBox.information(self, "No Categories",
                 "Please check at least one category.")
             return
-        best = self._app._auto_name_composite(self._file_paths, enabled_cats=enabled)
+        idx = self._naming_combo.currentIndex()
+        if idx < 0 or idx >= len(self._naming_model_keys):
+            return
+        naming_key = self._naming_model_keys[idx]
+        self._suggest_status.setText("Loading model & scoring…")
+        self._suggest_status.repaint()
+        best = self._app._auto_name_with_model(
+            self._file_paths, naming_key, enabled_cats=enabled)
+        self._suggest_status.setText("")
         if best:
             self._name_edit.setText(best)
 
@@ -7307,6 +7330,80 @@ class ImageSearchApp(QMainWindow):
 
         return " ".join(parts)
 
+    def _auto_name_with_model(self, file_paths, naming_model_key, enabled_cats=None):
+        """Score categories using a specific text-capable model.
+
+        If the requested model is the active main model and embeddings exist,
+        delegates to the normal ``_auto_name_composite``.  Otherwise loads the
+        naming model (cached in ``_specialist_models``), re-encodes the album
+        images with it, and runs the category scoring.
+        """
+        # Fast path: naming model is the active model and we already have embeddings
+        if (naming_model_key == self.active_model_key
+                and self.clip_model is not None
+                and self.image_embeddings is not None):
+            return self._auto_name_composite(file_paths, enabled_cats=enabled_cats)
+
+        # Load (or reuse cached) naming model
+        if naming_model_key in self._specialist_models:
+            naming_model = self._specialist_models[naming_model_key]
+        else:
+            try:
+                label = MODEL_REGISTRY[naming_model_key]["label"]
+                safe_print(f"[RENAME] Loading naming model '{label}'…")
+                naming_model = create_model(naming_model_key)
+                self._specialist_models[naming_model_key] = naming_model
+                safe_print(f"[RENAME] Naming model '{label}' ready.")
+            except Exception as e:
+                safe_print(f"[RENAME] Could not load naming model: {e}")
+                return ""
+
+        # Encode album images with the naming model
+        group_emb = self._encode_group_with_model(file_paths, naming_model)
+        if group_emb is None:
+            return ""
+
+        all_cats = dict(RENAME_CATEGORIES)
+        saved = _load_app_settings().get("rename_custom_categories", {})
+        all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
+        if enabled_cats is not None:
+            all_cats = {k: v for k, v in all_cats.items() if k in enabled_cats}
+
+        # Pre-compute specialist group embeddings where applicable
+        specialist_embs = {}
+        for cat_name in all_cats:
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            if model_key and model_key not in specialist_embs:
+                spec_model = self._get_specialist_model(cat_name)
+                if spec_model is not None:
+                    emb = self._encode_group_with_model(file_paths, spec_model)
+                    if emb is not None:
+                        specialist_embs[model_key] = emb
+
+        scored = []
+        for cat_name, labels in all_cats.items():
+            if not labels:
+                continue
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            specialist = self._specialist_models.get(model_key) if model_key else None
+            cat_emb = specialist_embs.get(model_key, group_emb)
+            # Use the specialist model for scoring when available, else the naming model
+            score_model = specialist if specialist is not None else naming_model
+            best_label, margin = self._score_single_category(
+                cat_emb, cat_name, labels, model=score_model)
+            if best_label:
+                scored.append((margin, cat_name, best_label))
+
+        if not scored:
+            return ""
+
+        scored.sort(reverse=True)
+        MARGIN_THRESHOLD = 0.02
+        parts = [lbl for mg, _cat, lbl in scored[:3] if mg >= MARGIN_THRESHOLD]
+        if not parts:
+            parts = [scored[0][2]]
+        return " ".join(parts)
+
     def rename_selected(self):
         """Batch-rename the currently selected images from the main search view."""
         if not self.selected_images:
@@ -8620,6 +8717,9 @@ class ImageSearchApp(QMainWindow):
         ALBUM_THUMB = (_DIALOG_IMG_H - 10, _DIALOG_IMG_H - 10)
         COLS = 4
 
+        # Shared list of folders created during this session: [(path, base_name), ...]
+        created_folders: list[tuple[str, str]] = []
+
         for idx, info in enumerate(cluster_info):
             rep_idx = info["representative"]
             abs_path = self.image_paths[rep_idx]  # already absolute
@@ -8656,7 +8756,8 @@ class ImageSearchApp(QMainWindow):
                 rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self)
                 rename_dlg.exec()
 
-            def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup):
+            def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
+                              _created=created_folders):
                 """Create a subfolder and copy/move album images into it."""
                 paths = [self.image_paths[i] for i in members]
                 default_name = "No_Duplicates_Found" if no_dup else f"Album_{num}"
@@ -8699,6 +8800,133 @@ class ImageSearchApp(QMainWindow):
                 if errors:
                     summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
                 QMessageBox.information(dlg, "Done", summary)
+                # Track this folder for merging from other albums
+                _created.append((dest, name.strip()))
+
+            def merge_into_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
+                                  _created=created_folders):
+                """Merge this album's images into a previously created album folder."""
+                if not _created:
+                    QMessageBox.information(
+                        dlg, "No Folders Yet",
+                        "No album folders have been created yet in this session.\n\n"
+                        "Use <b>Create Folder</b> on an album first, then come back\n"
+                        "to merge other albums into it.")
+                    return
+
+                paths = [self.image_paths[i] for i in members]
+
+                # ── Folder picker dialog ──
+                pick_dlg = QDialog(dlg)
+                pick_dlg.setWindowTitle("Merge into Folder")
+                pick_dlg.resize(500, 340)
+                pick_dlg.setStyleSheet(_dlg_stylesheet())
+                _dark_title(pick_dlg)
+                pick_lay = QVBoxLayout(pick_dlg)
+                pick_lay.setContentsMargins(0, 0, 0, 0)
+                pick_lay.setSpacing(0)
+
+                pick_hdr = _make_panel(bottom_border=True)
+                pick_hdr_lay = QVBoxLayout(pick_hdr)
+                pick_hdr_lay.setContentsMargins(14, 10, 14, 10)
+                pick_hdr_lay.addWidget(QLabel(
+                    f"<b>Merge {len(paths)} file(s)</b> into an existing album folder.\n"
+                    "Select a folder, then choose to copy or move."))
+                pick_lay.addWidget(pick_hdr)
+
+                folder_list = QListWidget()
+                for folder_path, folder_name in _created:
+                    n_existing = len([f for f in os.listdir(folder_path)
+                                      if os.path.isfile(os.path.join(folder_path, f))]) \
+                                 if os.path.isdir(folder_path) else 0
+                    folder_list.addItem(
+                        f"{folder_name}  ({n_existing} files)  —  {folder_path}")
+                if folder_list.count() > 0:
+                    folder_list.setCurrentRow(0)
+                pick_lay.addWidget(folder_list, stretch=1)
+
+                # Rename checkbox
+                rename_cb = QCheckBox("Batch-rename files after merging (match folder naming)")
+                rename_cb.setChecked(True)
+                rename_cb.setStyleSheet(f"padding: 8px 14px;")
+                pick_lay.addWidget(rename_cb)
+
+                pick_foot = _make_panel()
+                pick_foot_lay = QHBoxLayout(pick_foot)
+                pick_foot_lay.setContentsMargins(12, 8, 12, 8)
+                pick_foot_lay.addStretch()
+                copy_btn = QPushButton("Copy into Folder")
+                _style_btn(copy_btn, "accent")
+                move_btn = QPushButton("Move into Folder")
+                _style_btn(move_btn, "danger")
+                cancel_btn = QPushButton("Cancel")
+                _style_btn(cancel_btn, "muted")
+                pick_foot_lay.addWidget(copy_btn)
+                pick_foot_lay.addWidget(move_btn)
+                pick_foot_lay.addWidget(cancel_btn)
+                pick_lay.addWidget(pick_foot)
+
+                pick_result = {"action": None}
+
+                def _accept_copy():
+                    pick_result["action"] = "copy"
+                    pick_dlg.accept()
+
+                def _accept_move():
+                    pick_result["action"] = "move"
+                    pick_dlg.accept()
+
+                copy_btn.clicked.connect(_accept_copy)
+                move_btn.clicked.connect(_accept_move)
+                cancel_btn.clicked.connect(pick_dlg.reject)
+
+                if pick_dlg.exec() != QDialog.DialogCode.Accepted:
+                    return
+                sel_row = folder_list.currentRow()
+                if sel_row < 0:
+                    return
+                dest_path, dest_name = _created[sel_row]
+                do_move = (pick_result["action"] == "move")
+
+                if not os.path.isdir(dest_path):
+                    QMessageBox.warning(dlg, "Folder Missing",
+                        f"The folder no longer exists:\n{dest_path}")
+                    return
+
+                # ── Copy/move files ──
+                import shutil
+                ok_count, errors = 0, []
+                landed_paths = []
+                for p in paths:
+                    target = os.path.join(dest_path, os.path.basename(p))
+                    try:
+                        if do_move:
+                            shutil.move(p, target)
+                        else:
+                            shutil.copy2(p, target)
+                        ok_count += 1
+                        landed_paths.append(target)
+                    except Exception as e:
+                        errors.append(f"{os.path.basename(p)}: {e}")
+
+                action = "Moved" if do_move else "Copied"
+                summary = f"{action} {ok_count}/{len(paths)} files into:\n{dest_path}"
+                if errors:
+                    summary += f"\n\n{len(errors)} error(s):\n" + "\n".join(errors[:10])
+                QMessageBox.information(dlg, "Done", summary)
+
+                # ── Optional batch rename ──
+                if rename_cb.isChecked() and landed_paths:
+                    rename_dlg = BatchRenameDialog(
+                        dlg,
+                        # Rename ALL files in the folder so numbering is consistent
+                        sorted(
+                            [os.path.join(dest_path, f) for f in os.listdir(dest_path)
+                             if os.path.isfile(os.path.join(dest_path, f))]),
+                        suggested=dest_name,
+                        app=self,
+                    )
+                    rename_dlg.exec()
 
             # ── Build thumbnail ──
             pixmap = None
@@ -8728,6 +8956,7 @@ class ImageSearchApp(QMainWindow):
                 buttons=[
                     ("View Album", "accent", view_album),
                     ("Create Folder", "muted", create_folder),
+                    ("Merge into Folder\u2026", "muted", merge_into_folder),
                     ("Rename\u2026", "muted", rename_album),
                 ],
             )
