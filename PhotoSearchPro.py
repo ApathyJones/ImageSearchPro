@@ -2645,8 +2645,34 @@ class BatchRenameDialog(QDialog):
         self.dest_folder = ""
 
         self.setWindowTitle(f"Batch Rename — {len(self._file_paths)} file(s)")
-        self.resize(620, 560)
+        self.resize(620, 580)
+        self.setStyleSheet(_dlg_stylesheet())
+        _dark_title(self)
+
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        info_lbl = QLabel(
+            f"<b>Batch Rename</b> — {len(self._file_paths)} file(s)")
+        info_lbl.setWordWrap(True)
+        hdr_lay.addWidget(info_lbl)
+        layout.addWidget(hdr)
+
+        # ── Scrollable body ───────────────────────────────────────────────────
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 10, 14, 10)
+        body_lay.setSpacing(10)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, stretch=1)
 
         # ── Name row ──────────────────────────────────────────────────────────
         name_row = QHBoxLayout()
@@ -2655,23 +2681,31 @@ class BatchRenameDialog(QDialog):
         self._name_edit.setPlaceholderText("e.g. Red Shirt  →  Red_Shirt (1).jpg")
         self._name_edit.textChanged.connect(self._refresh_preview)
         name_row.addWidget(self._name_edit, stretch=1)
-        layout.addLayout(name_row)
+        body_lay.addLayout(name_row)
 
         # ── Auto-name row ──────────────────────────────────────────────────
         auto_frame = QFrame()
-        auto_frame.setStyleSheet(f"background-color: {PANEL_BG}; border-radius: 4px;")
+        auto_frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE}; border: 1px solid {BORDER};"
+            f" border-radius: 8px; }}"
+            f" QLabel {{ background: transparent; border: none; }}"
+            f" QCheckBox {{ background: transparent; border: none; }}")
         auto_layout = QVBoxLayout(auto_frame)
-        auto_layout.setContentsMargins(8, 6, 8, 6)
-        auto_layout.setSpacing(4)
+        auto_layout.setContentsMargins(10, 8, 10, 8)
+        auto_layout.setSpacing(6)
 
         # ── Category checkboxes ────────────────────────────────────────────
         cat_header_row = QHBoxLayout()
-        cat_header_row.addWidget(QLabel("Auto-name categories:"))
+        cat_lbl = QLabel("Auto-name categories:")
+        cat_lbl.setStyleSheet(f"color: {FG_DIM}; font-weight: 600; font-size: 9pt;")
+        cat_header_row.addWidget(cat_lbl)
         cat_header_row.addStretch()
         select_all_btn = QPushButton("All")
-        select_all_btn.setFlat(True)
+        _style_btn(select_all_btn, "muted")
+        select_all_btn.setFixedHeight(24)
         select_none_btn = QPushButton("None")
-        select_none_btn.setFlat(True)
+        _style_btn(select_none_btn, "muted")
+        select_none_btn.setFixedHeight(24)
         cat_header_row.addWidget(select_all_btn)
         cat_header_row.addWidget(select_none_btn)
         auto_layout.addLayout(cat_header_row)
@@ -2694,6 +2728,7 @@ class BatchRenameDialog(QDialog):
 
         self._custom_cat_checkboxes: dict[str, QCheckBox] = {}
         self._custom_cb_row = QWidget()
+        self._custom_cb_row.setStyleSheet("background: transparent; border: none;")
         self._custom_cb_layout = QHBoxLayout(self._custom_cb_row)
         self._custom_cb_layout.setContentsMargins(0, 0, 0, 0)
         for cname in self._custom_cats:
@@ -2713,6 +2748,7 @@ class BatchRenameDialog(QDialog):
 
         suggest_row = QHBoxLayout()
         suggest_btn = QPushButton("Suggest Name")
+        _style_btn(suggest_btn, "accent")
         suggest_btn.setToolTip(
             "Scores each checked category and combines the top confident matches")
         suggest_btn.clicked.connect(self._run_auto_name)
@@ -2722,6 +2758,7 @@ class BatchRenameDialog(QDialog):
 
         # Custom category editor (hidden unless expanded via "+ New Custom Category")
         self._custom_frame = QWidget()
+        self._custom_frame.setStyleSheet("background: transparent; border: none;")
         custom_inner = QVBoxLayout(self._custom_frame)
         custom_inner.setContentsMargins(0, 0, 0, 0)
         custom_inner.setSpacing(4)
@@ -2739,6 +2776,7 @@ class BatchRenameDialog(QDialog):
         self._custom_labels_edit.setPlaceholderText("e.g. Eiffel Tower, Big Ben, Colosseum")
         clabels_row.addWidget(self._custom_labels_edit, stretch=1)
         save_cat_btn = QPushButton("Save Category")
+        _style_btn(save_cat_btn, "secondary")
         save_cat_btn.clicked.connect(self._save_custom_category)
         clabels_row.addWidget(save_cat_btn)
         custom_inner.addLayout(clabels_row)
@@ -2746,7 +2784,7 @@ class BatchRenameDialog(QDialog):
         self._custom_frame.setVisible(False)
 
         new_cat_btn = QPushButton("+ New Custom Category")
-        new_cat_btn.setFlat(True)
+        _style_btn(new_cat_btn, "muted")
         new_cat_btn.clicked.connect(
             lambda: self._custom_frame.setVisible(not self._custom_frame.isVisible()))
         auto_layout.addWidget(new_cat_btn)
@@ -2761,12 +2799,21 @@ class BatchRenameDialog(QDialog):
             suggest_btn.setEnabled(False)
             suggest_btn.setToolTip("Auto-naming requires a text-capable model (CLIP or SigLIP2)")
 
-        layout.addWidget(auto_frame)
+        body_lay.addWidget(auto_frame)
 
         # ── Destination ───────────────────────────────────────────────────────
-        dest_group = QGroupBox("Destination")
-        dest_group.setStyleSheet("QGroupBox { font-weight: bold; }")
-        dest_vbox = QVBoxLayout(dest_group)
+        dest_frame = QFrame()
+        dest_frame.setStyleSheet(
+            f"QFrame {{ background-color: {SURFACE}; border: 1px solid {BORDER};"
+            f" border-radius: 8px; }}"
+            f" QLabel {{ background: transparent; border: none; }}"
+            f" QRadioButton {{ background: transparent; border: none; }}")
+        dest_vbox = QVBoxLayout(dest_frame)
+        dest_vbox.setContentsMargins(10, 8, 10, 8)
+        dest_vbox.setSpacing(6)
+        dest_title = QLabel("Destination")
+        dest_title.setStyleSheet(f"color: {FG_DIM}; font-weight: 600; font-size: 9pt; border: none;")
+        dest_vbox.addWidget(dest_title)
 
         self._radio_inplace = QRadioButton("Keep files in their current folder (rename in place)")
         self._radio_inplace.setChecked(True)
@@ -2775,6 +2822,7 @@ class BatchRenameDialog(QDialog):
         dest_vbox.addWidget(self._radio_folder)
 
         self._folder_row = QWidget()
+        self._folder_row.setStyleSheet("background: transparent; border: none;")
         folder_inner = QHBoxLayout(self._folder_row)
         folder_inner.setContentsMargins(20, 0, 0, 0)
         folder_inner.addWidget(QLabel("Parent location:"))
@@ -2783,7 +2831,8 @@ class BatchRenameDialog(QDialog):
         if self._file_paths:
             self._dest_path_edit.setText(os.path.dirname(self._file_paths[0]))
         folder_inner.addWidget(self._dest_path_edit, stretch=1)
-        browse_btn = QPushButton("Browse…")
+        browse_btn = QPushButton("Browse\u2026")
+        _style_btn(browse_btn, "secondary")
         browse_btn.clicked.connect(self._browse_dest)
         folder_inner.addWidget(browse_btn)
         self._folder_row.setVisible(False)
@@ -2791,26 +2840,30 @@ class BatchRenameDialog(QDialog):
 
         self._radio_folder.toggled.connect(
             lambda checked: self._folder_row.setVisible(checked))
-        layout.addWidget(dest_group)
+        body_lay.addWidget(dest_frame)
 
         # ── Preview ───────────────────────────────────────────────────────────
-        layout.addWidget(QLabel("Preview (first 8 files):"))
+        preview_lbl = QLabel("Preview (first 8 files):")
+        preview_lbl.setStyleSheet(f"color: {FG_DIM}; font-weight: 600; font-size: 9pt;")
+        body_lay.addWidget(preview_lbl)
         self._preview_list = QListWidget()
         self._preview_list.setMaximumHeight(160)
-        self._preview_list.setStyleSheet(f"background-color: {CARD_BG};")
-        layout.addWidget(self._preview_list)
+        body_lay.addWidget(self._preview_list)
 
-        # ── Buttons ───────────────────────────────────────────────────────────
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
+        # ── Footer ────────────────────────────────────────────────────────────
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.addStretch()
         rename_btn = QPushButton("Rename")
-        rename_btn.setProperty("class", "accent")
+        _style_btn(rename_btn, "accent")
         rename_btn.clicked.connect(self._do_rename)
         cancel_btn = QPushButton("Cancel")
+        _style_btn(cancel_btn, "muted")
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(rename_btn)
-        btn_row.addWidget(cancel_btn)
-        layout.addLayout(btn_row)
+        foot_lay.addWidget(rename_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
 
         self._refresh_preview()
 
