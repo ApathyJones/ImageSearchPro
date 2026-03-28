@@ -2746,13 +2746,33 @@ class BatchRenameDialog(QDialog):
         select_all_btn.clicked.connect(lambda: [cb.setChecked(True)  for cb in _all_cbs()])
         select_none_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in _all_cbs()])
 
+        # ── Naming model selector + Suggest button ──────────────────────
         suggest_row = QHBoxLayout()
+        model_lbl = QLabel("Naming model:")
+        model_lbl.setStyleSheet(f"color: {FG_DIM}; font-size: 9pt; border: none;")
+        suggest_row.addWidget(model_lbl)
+        self._naming_combo = QComboBox()
+        self._naming_model_keys = []
+        for key, cfg in MODEL_REGISTRY.items():
+            if cfg.get("has_text") and not cfg.get("specialist_only"):
+                self._naming_model_keys.append(key)
+                active_tag = "  (active)" if (app and key == app.active_model_key) else ""
+                self._naming_combo.addItem(f"{cfg['label']}{active_tag}")
+        # Default to the active model if it has text, otherwise first text model
+        default_idx = 0
+        if app and app.active_model_key in self._naming_model_keys:
+            default_idx = self._naming_model_keys.index(app.active_model_key)
+        self._naming_combo.setCurrentIndex(default_idx)
+        suggest_row.addWidget(self._naming_combo)
         suggest_btn = QPushButton("Suggest Name")
         _style_btn(suggest_btn, "accent")
         suggest_btn.setToolTip(
-            "Scores each checked category and combines the top confident matches")
+            "Loads the selected naming model and scores each checked category")
         suggest_btn.clicked.connect(self._run_auto_name)
         suggest_row.addWidget(suggest_btn)
+        self._suggest_status = QLabel("")
+        self._suggest_status.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt; border: none;")
+        suggest_row.addWidget(self._suggest_status)
         suggest_row.addStretch()
         auto_layout.addLayout(suggest_row)
 
@@ -2790,14 +2810,9 @@ class BatchRenameDialog(QDialog):
         auto_layout.addWidget(new_cat_btn)
         auto_layout.addWidget(self._custom_frame)
 
-        has_text = (
-            app is not None
-            and app.clip_model is not None
-            and getattr(app, "model_has_text", False)
-        )
-        if not has_text:
+        if not self._naming_model_keys:
             suggest_btn.setEnabled(False)
-            suggest_btn.setToolTip("Auto-naming requires a text-capable model (CLIP or SigLIP2)")
+            suggest_btn.setToolTip("No text-capable models available")
 
         body_lay.addWidget(auto_frame)
 
@@ -2929,7 +2944,7 @@ class BatchRenameDialog(QDialog):
         QMessageBox.information(self, "Saved", f"Custom category '{cname}' saved.")
 
     def _run_auto_name(self):
-        if self._app is None or self._app.clip_model is None:
+        if self._app is None:
             return
         enabled = [name for name, cb in self._cat_checkboxes.items() if cb.isChecked()]
         enabled += [name for name, cb in self._custom_cat_checkboxes.items() if cb.isChecked()]
@@ -2937,7 +2952,15 @@ class BatchRenameDialog(QDialog):
             QMessageBox.information(self, "No Categories",
                 "Please check at least one category.")
             return
-        best = self._app._auto_name_composite(self._file_paths, enabled_cats=enabled)
+        idx = self._naming_combo.currentIndex()
+        if idx < 0 or idx >= len(self._naming_model_keys):
+            return
+        naming_key = self._naming_model_keys[idx]
+        self._suggest_status.setText("Loading model & scoring…")
+        self._suggest_status.repaint()
+        best = self._app._auto_name_with_model(
+            self._file_paths, naming_key, enabled_cats=enabled)
+        self._suggest_status.setText("")
         if best:
             self._name_edit.setText(best)
 
@@ -7305,6 +7328,80 @@ class ImageSearchApp(QMainWindow):
         if not parts:
             parts = [scored[0][2]]
 
+        return " ".join(parts)
+
+    def _auto_name_with_model(self, file_paths, naming_model_key, enabled_cats=None):
+        """Score categories using a specific text-capable model.
+
+        If the requested model is the active main model and embeddings exist,
+        delegates to the normal ``_auto_name_composite``.  Otherwise loads the
+        naming model (cached in ``_specialist_models``), re-encodes the album
+        images with it, and runs the category scoring.
+        """
+        # Fast path: naming model is the active model and we already have embeddings
+        if (naming_model_key == self.active_model_key
+                and self.clip_model is not None
+                and self.image_embeddings is not None):
+            return self._auto_name_composite(file_paths, enabled_cats=enabled_cats)
+
+        # Load (or reuse cached) naming model
+        if naming_model_key in self._specialist_models:
+            naming_model = self._specialist_models[naming_model_key]
+        else:
+            try:
+                label = MODEL_REGISTRY[naming_model_key]["label"]
+                safe_print(f"[RENAME] Loading naming model '{label}'…")
+                naming_model = create_model(naming_model_key)
+                self._specialist_models[naming_model_key] = naming_model
+                safe_print(f"[RENAME] Naming model '{label}' ready.")
+            except Exception as e:
+                safe_print(f"[RENAME] Could not load naming model: {e}")
+                return ""
+
+        # Encode album images with the naming model
+        group_emb = self._encode_group_with_model(file_paths, naming_model)
+        if group_emb is None:
+            return ""
+
+        all_cats = dict(RENAME_CATEGORIES)
+        saved = _load_app_settings().get("rename_custom_categories", {})
+        all_cats.update({k: v for k, v in saved.items() if isinstance(v, list)})
+        if enabled_cats is not None:
+            all_cats = {k: v for k, v in all_cats.items() if k in enabled_cats}
+
+        # Pre-compute specialist group embeddings where applicable
+        specialist_embs = {}
+        for cat_name in all_cats:
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            if model_key and model_key not in specialist_embs:
+                spec_model = self._get_specialist_model(cat_name)
+                if spec_model is not None:
+                    emb = self._encode_group_with_model(file_paths, spec_model)
+                    if emb is not None:
+                        specialist_embs[model_key] = emb
+
+        scored = []
+        for cat_name, labels in all_cats.items():
+            if not labels:
+                continue
+            model_key = CATEGORY_MODEL_MAP.get(cat_name)
+            specialist = self._specialist_models.get(model_key) if model_key else None
+            cat_emb = specialist_embs.get(model_key, group_emb)
+            # Use the specialist model for scoring when available, else the naming model
+            score_model = specialist if specialist is not None else naming_model
+            best_label, margin = self._score_single_category(
+                cat_emb, cat_name, labels, model=score_model)
+            if best_label:
+                scored.append((margin, cat_name, best_label))
+
+        if not scored:
+            return ""
+
+        scored.sort(reverse=True)
+        MARGIN_THRESHOLD = 0.02
+        parts = [lbl for mg, _cat, lbl in scored[:3] if mg >= MARGIN_THRESHOLD]
+        if not parts:
+            parts = [scored[0][2]]
         return " ".join(parts)
 
     def rename_selected(self):
