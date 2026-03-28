@@ -10076,6 +10076,12 @@ if __name__ == "__main__":
         os.environ['QT_PLUGIN_PATH'] = _qt_plugin_dir
         os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = os.path.join(_qt_plugin_dir, 'platforms')
 
+    # On Windows, set an explicit AppUserModelID so the taskbar shows our own
+    # icon instead of the generic Python interpreter icon.
+    if os.name == 'nt':
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            'PhotoSearchPro.AIMediaSearch.1')
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")  # consistent cross-platform look
 
@@ -10097,6 +10103,38 @@ if __name__ == "__main__":
 
     # Apply dark QSS theme
     app.setStyleSheet(DARK_QSS)
+
+    # ── Application icon ──────────────────────────────────────────────────
+    # Build a simple branded icon so the taskbar and window title show the
+    # app's own icon rather than the generic Python interpreter icon.
+    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              'photosearchpro.ico')
+    if os.path.isfile(_icon_path):
+        _app_icon = QIcon(_icon_path)
+    else:
+        # Fallback: generate a simple icon at runtime (magnifying-glass motif)
+        from PyQt6.QtGui import QPixmap, QPainter, QPen, QBrush, QColor, QFont
+        from PyQt6.QtCore import Qt, QPoint, QRect
+        _pm = QPixmap(256, 256)
+        _pm.fill(QColor(0, 0, 0, 0))
+        _p = QPainter(_pm)
+        _p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Lens circle
+        _p.setPen(QPen(QColor(ACCENT_SECONDARY), 22))
+        _p.setBrush(QBrush(QColor(28, 34, 48, 180)))
+        _p.drawEllipse(30, 20, 150, 150)
+        # Handle
+        _p.setPen(QPen(QColor(ACCENT_SECONDARY), 26, Qt.PenStyle.SolidLine,
+                        Qt.PenCapStyle.RoundCap))
+        _p.drawLine(QPoint(160, 155), QPoint(225, 225))
+        # "AI" text inside lens
+        _f = QFont("Arial", 42, QFont.Weight.Bold)
+        _p.setFont(_f)
+        _p.setPen(QPen(QColor(ACCENT_GLOW)))
+        _p.drawText(QRect(30, 20, 150, 150), Qt.AlignmentFlag.AlignCenter, "AI")
+        _p.end()
+        _app_icon = QIcon(_pm)
+    app.setWindowIcon(_app_icon)
 
     window = ImageSearchApp()
     window.show()
