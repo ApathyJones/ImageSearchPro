@@ -2636,10 +2636,12 @@ class BatchRenameDialog(QDialog):
     app        : ImageSearchApp — reference for CLIP auto-naming and settings
     """
 
-    def __init__(self, parent, file_paths, suggested="", app=None):
+    def __init__(self, parent, file_paths, suggested="", app=None,
+                 created_folders=None):
         super().__init__(parent)
         self._file_paths = list(file_paths)
         self._app = app
+        self._created_folders = created_folders  # shared list for Merge tracking
         self.result_pairs = []   # filled on accept: [(old_path, new_path), ...]
         self.dest_mode = "inplace"
         self.dest_folder = ""
@@ -2854,8 +2856,26 @@ class BatchRenameDialog(QDialog):
         self._folder_row.setVisible(False)
         dest_vbox.addWidget(self._folder_row)
 
-        self._radio_folder.toggled.connect(
-            lambda checked: self._folder_row.setVisible(checked))
+        # Copy / Move toggle (only visible when "new folder" is selected)
+        self._copy_move_row = QWidget()
+        self._copy_move_row.setStyleSheet("background: transparent; border: none;")
+        cm_inner = QHBoxLayout(self._copy_move_row)
+        cm_inner.setContentsMargins(20, 0, 0, 0)
+        cm_inner.addWidget(QLabel("File action:"))
+        self._radio_move = QRadioButton("Move files")
+        self._radio_copy = QRadioButton("Copy files (keep originals)")
+        self._radio_move.setChecked(True)
+        cm_inner.addWidget(self._radio_move)
+        cm_inner.addWidget(self._radio_copy)
+        cm_inner.addStretch()
+        self._copy_move_row.setVisible(False)
+        dest_vbox.addWidget(self._copy_move_row)
+
+        def _on_folder_toggled(checked):
+            self._folder_row.setVisible(checked)
+            self._copy_move_row.setVisible(checked)
+
+        self._radio_folder.toggled.connect(_on_folder_toggled)
         body_lay.addWidget(dest_frame)
 
         # ── Preview ───────────────────────────────────────────────────────────
@@ -3000,7 +3020,8 @@ class BatchRenameDialog(QDialog):
                 QMessageBox.warning(self, "Invalid Folder",
                     "Please choose a valid parent folder.")
                 return
-            dest_mode = "new_folder"
+            use_copy = self._radio_copy.isChecked()
+            dest_mode = "copy_folder" if use_copy else "new_folder"
             dest_folder = os.path.join(parent, base)
         else:
             dest_mode = "inplace"
@@ -3018,8 +3039,14 @@ class BatchRenameDialog(QDialog):
                 f"{len(pairs)} file(s) renamed.\n"
                 f"{len(errors)} error(s):\n" + "\n".join(errors[:5]))
         else:
+            action = "copied" if dest_mode == "copy_folder" else "renamed"
             QMessageBox.information(self, "Done",
-                f"{len(pairs)} file(s) renamed successfully.")
+                f"{len(pairs)} file(s) {action} successfully.")
+
+        # Track created folder for Merge into Folder
+        if dest_mode in ("new_folder", "copy_folder") and pairs and dest_folder:
+            if self._created_folders is not None:
+                self._created_folders.append((dest_folder, base))
 
         self.result_pairs = pairs
         self.accept()
@@ -3029,7 +3056,7 @@ def _batch_rename_files_standalone(file_paths, base, dest_mode, dest_folder):
     """Rename files without an app reference (used when app is None)."""
     import re, shutil as _shutil
     pairs, errors = [], []
-    if dest_mode == "new_folder":
+    if dest_mode in ("new_folder", "copy_folder"):
         try:
             os.makedirs(dest_folder, exist_ok=True)
         except Exception as e:
@@ -3040,7 +3067,7 @@ def _batch_rename_files_standalone(file_paths, base, dest_mode, dest_folder):
             continue
         ext = os.path.splitext(path)[1]
         new_name = f"{base} ({i}){ext}"
-        if dest_mode == "new_folder":
+        if dest_mode in ("new_folder", "copy_folder"):
             new_path = os.path.join(dest_folder, new_name)
         else:
             new_path = os.path.join(os.path.dirname(path), new_name)
@@ -3049,7 +3076,9 @@ def _batch_rename_files_standalone(file_paths, base, dest_mode, dest_folder):
             errors.append(f"Target exists, skipped: {new_name}")
             continue
         try:
-            if dest_mode == "new_folder":
+            if dest_mode == "copy_folder":
+                _shutil.copy2(path, new_path)
+            elif dest_mode == "new_folder":
                 _shutil.move(path, new_path)
             else:
                 os.rename(path, new_path)
@@ -7058,17 +7087,17 @@ class ImageSearchApp(QMainWindow):
         ----------
         file_paths  : list[str] — absolute paths to rename
         base        : str — sanitized base name (underscores, no spaces)
-        dest_mode   : "inplace" | "new_folder"
-        dest_folder : str — full path to the destination folder (new_folder mode only)
+        dest_mode   : "inplace" | "new_folder" | "copy_folder"
+        dest_folder : str — full path to the destination folder (new_folder/copy_folder only)
 
         Returns
         -------
-        pairs  : list[(old_path, new_path)] — successfully renamed files
+        pairs  : list[(old_path, new_path)] — successfully renamed/copied files
         errors : list[str] — human-readable error messages
         """
         pairs, errors = [], []
 
-        if dest_mode == "new_folder":
+        if dest_mode in ("new_folder", "copy_folder"):
             try:
                 os.makedirs(dest_folder, exist_ok=True)
             except Exception as e:
@@ -7080,7 +7109,7 @@ class ImageSearchApp(QMainWindow):
                 continue
             ext = os.path.splitext(path)[1]
             new_name = f"{base} ({i}){ext}"
-            if dest_mode == "new_folder":
+            if dest_mode in ("new_folder", "copy_folder"):
                 new_path = os.path.join(dest_folder, new_name)
             else:
                 new_path = os.path.join(os.path.dirname(path), new_name)
@@ -7091,7 +7120,9 @@ class ImageSearchApp(QMainWindow):
                 continue
 
             try:
-                if dest_mode == "new_folder":
+                if dest_mode == "copy_folder":
+                    shutil.copy2(path, new_path)
+                elif dest_mode == "new_folder":
                     shutil.move(path, new_path)
                 else:
                     os.rename(path, new_path)
@@ -7099,8 +7130,8 @@ class ImageSearchApp(QMainWindow):
             except Exception as e:
                 errors.append(f"{os.path.basename(path)}: {e}")
 
-        # ── Sync the in-memory index ──────────────────────────────────────────
-        if pairs:
+        # ── Sync the in-memory index (skip for copy — originals unchanged) ───
+        if pairs and dest_mode != "copy_folder":
             old_to_new = {old: new for old, new in pairs}
             self.image_paths = [
                 old_to_new.get(p, p) for p in self.image_paths
@@ -8803,10 +8834,12 @@ class ImageSearchApp(QMainWindow):
                 self.is_searching = True
                 self.start_thumbnail_loader(first_batch, self.search_generation)
 
-            def rename_album(members=info["members"], num=album_num, no_dup=is_no_dup):
+            def rename_album(members=info["members"], num=album_num, no_dup=is_no_dup,
+                            _created=created_folders):
                 paths = [self.image_paths[i] for i in members]
                 suggested = "No_Duplicates_Found" if no_dup else f"Album_{num}"
-                rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self)
+                rename_dlg = BatchRenameDialog(dlg, paths, suggested=suggested, app=self,
+                                               created_folders=_created)
                 rename_dlg.exec()
 
             def create_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
