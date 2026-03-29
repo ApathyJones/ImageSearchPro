@@ -10142,18 +10142,13 @@ class ImageSearchApp(QMainWindow):
 
     def on_image_sorter(self):
         """Show the Image Sorter setup dialog, then launch sorting."""
-        if self.image_embeddings is None or len(self.image_paths) < 1:
-            QMessageBox.warning(self, "Not Ready", "Please index images first.")
-            return
         if self.is_indexing:
             QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
             return
 
-        n_images = len(self.image_paths)
-
         dlg = QDialog(self)
         dlg.setWindowTitle("Image Sorter — Setup")
-        dlg.setFixedSize(560, 420)
+        dlg.setFixedSize(560, 480)
         dlg.setStyleSheet(_dlg_stylesheet())
         _dark_title(dlg)
         layout = QVBoxLayout(dlg)
@@ -10176,6 +10171,66 @@ class ImageSearchApp(QMainWindow):
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(14, 12, 14, 12)
         body_lay.setSpacing(8)
+
+        # Source folder
+        src_row = QHBoxLayout()
+        src_row.setSpacing(8)
+        src_lbl = QLabel("Source folder:")
+        src_lbl.setStyleSheet(f"color: {FG}; font-weight: 600;")
+        src_edit = QLineEdit()
+        # Pre-fill with indexed folder if available
+        if self.folder:
+            src_edit.setText(self.folder)
+        src_edit.setPlaceholderText("Folder containing images to sort")
+        src_browse = QPushButton("Browse…")
+        _style_btn(src_browse, "secondary")
+        src_browse.setFixedWidth(80)
+
+        def _pick_source(_checked=False):
+            folder = QFileDialog.getExistingDirectory(dlg, "Select Source Folder")
+            if folder:
+                src_edit.setText(folder)
+                _update_count()
+        src_browse.clicked.connect(_pick_source)
+
+        src_row.addWidget(src_lbl)
+        src_row.addWidget(src_edit, stretch=1)
+        src_row.addWidget(src_browse)
+        body_lay.addLayout(src_row)
+
+        count_lbl = QLabel("")
+        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(count_lbl)
+
+        def _scan_source_folder(folder_path):
+            """Scan a folder for image files and return absolute paths."""
+            images = []
+            for root, dirs, files in os.walk(folder_path):
+                for fname in sorted(files):
+                    if fname.lower().endswith(IMAGE_EXTS):
+                        images.append(os.path.join(root, fname))
+            return images
+
+        def _update_count():
+            path = src_edit.text().strip()
+            if path and os.path.isdir(path):
+                # Quick count without full scan
+                n = sum(1 for root, dirs, files in os.walk(path)
+                        for f in files if f.lower().endswith(IMAGE_EXTS))
+                count_lbl.setText(f"{n:,} images found")
+            else:
+                count_lbl.setText("")
+
+        src_edit.editingFinished.connect(_update_count)
+        _update_count()
+
+        body_lay.addSpacing(4)
+
+        # Separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {BORDER};")
+        body_lay.addWidget(sep)
 
         folder_edits = []
         for slot in range(4):
@@ -10215,14 +10270,24 @@ class ImageSearchApp(QMainWindow):
             "FolderName (2).ext, etc.\nWhen disabled, files keep their original names.")
         body_lay.addWidget(rename_cb)
 
-        count_lbl = QLabel(f"{n_images:,} indexed images to sort")
-        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
-        body_lay.addWidget(count_lbl)
         body_lay.addStretch()
         layout.addWidget(body, stretch=1)
 
         # Footer
         def start_sorting():
+            # Validate source folder
+            source_path = src_edit.text().strip()
+            if not source_path or not os.path.isdir(source_path):
+                QMessageBox.warning(dlg, "No Source",
+                    "Please select a source folder containing images.")
+                return
+            # Scan for images
+            source_images = _scan_source_folder(source_path)
+            if not source_images:
+                QMessageBox.warning(dlg, "No Images",
+                    f"No images found in:\n{source_path}")
+                return
+            # Validate destination slots
             slots = []
             for i, ed in enumerate(folder_edits):
                 path = ed.text().strip()
@@ -10241,7 +10306,7 @@ class ImageSearchApp(QMainWindow):
                 return
             auto_rename = rename_cb.isChecked()
             dlg.accept()
-            self._open_sorter_dialog(slots, auto_rename)
+            self._open_sorter_dialog(slots, auto_rename, source_images)
 
         footer = _make_panel()
         foot_lay = QHBoxLayout(footer)
@@ -10260,9 +10325,9 @@ class ImageSearchApp(QMainWindow):
 
         dlg.exec()
 
-    def _open_sorter_dialog(self, slots, auto_rename):
+    def _open_sorter_dialog(self, slots, auto_rename, source_images=None):
         """Open the full sorting dialog. slots = [(key_num, folder_path), ...]."""
-        all_paths = list(self.image_paths)
+        all_paths = list(source_images) if source_images else list(self.image_paths)
         total = len(all_paths)
         current_idx = [0]
         undo_stack = []       # list of (action, src, dst, original_name)
