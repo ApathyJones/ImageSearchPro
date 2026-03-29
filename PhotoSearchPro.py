@@ -8901,20 +8901,12 @@ class ImageSearchApp(QMainWindow):
             def merge_into_folder(members=info["members"], num=album_num, no_dup=is_no_dup,
                                   _created=created_folders):
                 """Merge this album's images into a previously created album folder."""
-                if not _created:
-                    QMessageBox.information(
-                        dlg, "No Folders Yet",
-                        "No album folders have been created yet in this session.\n\n"
-                        "Use <b>Create Folder</b> on an album first, then come back\n"
-                        "to merge other albums into it.")
-                    return
-
                 paths = [self.image_paths[i] for i in members]
 
                 # ── Folder picker dialog ──
                 pick_dlg = QDialog(dlg)
                 pick_dlg.setWindowTitle("Merge into Folder")
-                pick_dlg.resize(500, 340)
+                pick_dlg.resize(500, 380)
                 pick_dlg.setStyleSheet(_dlg_stylesheet())
                 _dark_title(pick_dlg)
                 pick_lay = QVBoxLayout(pick_dlg)
@@ -8925,8 +8917,8 @@ class ImageSearchApp(QMainWindow):
                 pick_hdr_lay = QVBoxLayout(pick_hdr)
                 pick_hdr_lay.setContentsMargins(14, 10, 14, 10)
                 pick_hdr_lay.addWidget(QLabel(
-                    f"<b>Merge {len(paths)} file(s)</b> into an existing album folder.\n"
-                    "Select a folder, then choose to copy or move."))
+                    f"<b>Merge {len(paths)} file(s)</b> into an existing folder.\n"
+                    "Select a folder from the list or browse for one, then choose to copy or move."))
                 pick_lay.addWidget(pick_hdr)
 
                 folder_list = QListWidget()
@@ -8939,6 +8931,40 @@ class ImageSearchApp(QMainWindow):
                 if folder_list.count() > 0:
                     folder_list.setCurrentRow(0)
                 pick_lay.addWidget(folder_list, stretch=1)
+
+                # Browse button to add any existing folder
+                browse_row = QHBoxLayout()
+                browse_row.setContentsMargins(12, 6, 12, 6)
+                browse_btn = QPushButton("Browse for Folder…")
+                _style_btn(browse_btn, "secondary")
+
+                def _browse_add():
+                    chosen = QFileDialog.getExistingDirectory(
+                        pick_dlg, "Select a folder to merge into")
+                    if not chosen:
+                        return
+                    # Check if already in the list
+                    for existing_path, _ in _created:
+                        if os.path.abspath(existing_path) == os.path.abspath(chosen):
+                            # Select the existing entry
+                            for row in range(folder_list.count()):
+                                if chosen in folder_list.item(row).text():
+                                    folder_list.setCurrentRow(row)
+                                    return
+                            return
+                    folder_name = os.path.basename(chosen) or chosen
+                    _created.append((chosen, folder_name))
+                    n_existing = len([f for f in os.listdir(chosen)
+                                      if os.path.isfile(os.path.join(chosen, f))]) \
+                                 if os.path.isdir(chosen) else 0
+                    folder_list.addItem(
+                        f"{folder_name}  ({n_existing} files)  —  {chosen}")
+                    folder_list.setCurrentRow(folder_list.count() - 1)
+
+                browse_btn.clicked.connect(_browse_add)
+                browse_row.addWidget(browse_btn)
+                browse_row.addStretch()
+                pick_lay.addLayout(browse_row)
 
                 # Rename checkbox
                 rename_cb = QCheckBox("Batch-rename files after merging (match folder naming)")
@@ -10168,7 +10194,7 @@ class ImageSearchApp(QMainWindow):
             _style_btn(browse_btn, "secondary")
             browse_btn.setFixedWidth(80)
 
-            def _pick(ed=folder_edit):
+            def _pick(_checked=False, ed=folder_edit):
                 folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
                 if folder:
                     ed.setText(folder)
