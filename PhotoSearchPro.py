@@ -10601,30 +10601,48 @@ class ImageSearchApp(QMainWindow):
             _update_undo_label()
 
         # ── Keyboard handling ────────────────────────────────────
+        class SorterEventFilter(QObject):
+            def eventFilter(self, obj, event):
+                # Intercept both KeyPress and ShortcutOverride to prevent focused 
+                # buttons from consuming the Space key before we can handle it.
+                if event.type() in (QEvent.Type.KeyPress, QEvent.Type.ShortcutOverride):
+                    key = event.key()
+                    
+                    if key in (Qt.Key.Key_1, Qt.Key.Key_2, Qt.Key.Key_3, Qt.Key.Key_4,
+                               Qt.Key.Key_Space, Qt.Key.Key_Backspace, Qt.Key.Key_Escape):
+                        
+                        # Only execute actions on the actual KeyPress, but accept 
+                        # both event types to stop propagation.
+                        if event.type() == QEvent.Type.KeyPress:
+                            if key == Qt.Key.Key_1 and 1 in key_map:
+                                _move_to_folder(key_map[1])
+                            elif key == Qt.Key.Key_2 and 2 in key_map:
+                                _move_to_folder(key_map[2])
+                            elif key == Qt.Key.Key_3 and 3 in key_map:
+                                _move_to_folder(key_map[3])
+                            elif key == Qt.Key.Key_4 and 4 in key_map:
+                                _move_to_folder(key_map[4])
+                            elif key == Qt.Key.Key_Space:
+                                _skip()
+                            elif key == Qt.Key.Key_Backspace:
+                                _undo()
+                            elif key == Qt.Key.Key_Escape:
+                                dlg.reject()
+                        
+                        event.accept()
+                        return True
+                        
+                return super().eventFilter(obj, event)
 
-        def _key_handler(event):
-            key = event.key()
-            if key == Qt.Key.Key_1 and 1 in key_map:
-                _move_to_folder(key_map[1])
-            elif key == Qt.Key.Key_2 and 2 in key_map:
-                _move_to_folder(key_map[2])
-            elif key == Qt.Key.Key_3 and 3 in key_map:
-                _move_to_folder(key_map[3])
-            elif key == Qt.Key.Key_4 and 4 in key_map:
-                _move_to_folder(key_map[4])
-            elif key == Qt.Key.Key_Space:
-                _skip()
-            elif key == Qt.Key.Key_Backspace:
-                _undo()
-            elif key == Qt.Key.Key_Escape:
-                dlg.reject()
+        # Instantiate and apply the filter to the dialog
+        dlg._filter = SorterEventFilter(dlg)
+        dlg.installEventFilter(dlg._filter)
+        
+        # Apply the filter to all child widgets (crucially, the exit button) 
+        # so they don't consume the Space event.
+        for child in dlg.findChildren(QWidget):
+            child.installEventFilter(dlg._filter)
 
-        dlg.keyPressEvent = _key_handler
-
-        # Load first image
-        _load_image(0)
-
-        self._sorter_dlg = dlg
         dlg.exec()
 
         # Summary on close
