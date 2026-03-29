@@ -3492,6 +3492,15 @@ class ImageSearchApp(QMainWindow):
         btn_lora.clicked.connect(self.on_lora_curator)
         toolbar_layout.addWidget(btn_lora)
 
+        btn_sorter = QPushButton("Sorter")
+        btn_sorter.setToolTip(
+            "Rapid image sorter — assign folders to keys 1-4,\n"
+            "then press a key to move each image into its folder.\n"
+            "Space to skip, Backspace to undo."
+        )
+        btn_sorter.clicked.connect(self.on_image_sorter)
+        toolbar_layout.addWidget(btn_sorter)
+
         toolbar_layout.addSpacing(4)
 
         self.status_label = QLabel("Starting...")
@@ -10102,6 +10111,442 @@ class ImageSearchApp(QMainWindow):
             import traceback; traceback.print_exc()
             self._safe_after(0, lambda: self.update_status("Face search failed", "red"))
 
+
+    # --- Feature: Image Sorter (rapid keyboard-driven sorting) -------------------
+
+    def on_image_sorter(self):
+        """Show the Image Sorter setup dialog, then launch sorting."""
+        if self.image_embeddings is None or len(self.image_paths) < 1:
+            QMessageBox.warning(self, "Not Ready", "Please index images first.")
+            return
+        if self.is_indexing:
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
+            return
+
+        n_images = len(self.image_paths)
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Image Sorter — Setup")
+        dlg.setFixedSize(560, 420)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # Header
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel(
+            "<b>Image Sorter</b> — rapid keyboard-driven sorting<br>"
+            f"<span style='font-size:8pt;color:{FG_MUTED};'>"
+            "Assign folders to keys 1-4, then press a key to move each image. "
+            "Space to skip, Backspace to undo.</span>"))
+        layout.addWidget(hdr)
+
+        # Body
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 12, 14, 12)
+        body_lay.setSpacing(8)
+
+        folder_edits = []
+        for slot in range(4):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            key_lbl = QLabel(f"  {slot + 1}  ")
+            key_lbl.setStyleSheet(
+                f"background: {ACCENT_SECONDARY}; color: #fff; font-weight: bold;"
+                f" font-size: 12pt; border-radius: 6px; padding: 2px 6px;"
+                f" min-width: 24px;")
+            key_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            key_lbl.setFixedWidth(32)
+            folder_edit = QLineEdit()
+            folder_edit.setPlaceholderText(f"Folder for key {slot + 1} (leave empty to skip)")
+            browse_btn = QPushButton("Browse…")
+            _style_btn(browse_btn, "secondary")
+            browse_btn.setFixedWidth(80)
+
+            def _pick(ed=folder_edit):
+                folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
+                if folder:
+                    ed.setText(folder)
+            browse_btn.clicked.connect(_pick)
+
+            row.addWidget(key_lbl)
+            row.addWidget(folder_edit, stretch=1)
+            row.addWidget(browse_btn)
+            body_lay.addLayout(row)
+            folder_edits.append(folder_edit)
+
+        body_lay.addSpacing(6)
+
+        # Auto-rename toggle
+        rename_cb = QCheckBox("Auto-rename files based on destination folder name")
+        rename_cb.setToolTip(
+            "When enabled, moved files are renamed to FolderName (1).ext, "
+            "FolderName (2).ext, etc.\nWhen disabled, files keep their original names.")
+        body_lay.addWidget(rename_cb)
+
+        count_lbl = QLabel(f"{n_images:,} indexed images to sort")
+        count_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(count_lbl)
+        body_lay.addStretch()
+        layout.addWidget(body, stretch=1)
+
+        # Footer
+        def start_sorting():
+            slots = []
+            for i, ed in enumerate(folder_edits):
+                path = ed.text().strip()
+                if path:
+                    if not os.path.isdir(path):
+                        try:
+                            os.makedirs(path, exist_ok=True)
+                        except Exception as e:
+                            QMessageBox.warning(dlg, "Invalid Folder",
+                                f"Cannot create folder for key {i+1}:\n{e}")
+                            return
+                    slots.append((i + 1, path))
+            if not slots:
+                QMessageBox.warning(dlg, "No Folders",
+                    "Please assign at least one folder to a key.")
+                return
+            auto_rename = rename_cb.isChecked()
+            dlg.accept()
+            self._open_sorter_dialog(slots, auto_rename)
+
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+        start_btn = QPushButton("Start Sorting")
+        cancel_btn = QPushButton("Cancel")
+        _style_btn(start_btn, "accent")
+        _style_btn(cancel_btn, "muted")
+        start_btn.clicked.connect(start_sorting)
+        cancel_btn.clicked.connect(dlg.reject)
+        foot_lay.addStretch()
+        foot_lay.addWidget(start_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
+
+        dlg.exec()
+
+    def _open_sorter_dialog(self, slots, auto_rename):
+        """Open the full sorting dialog. slots = [(key_num, folder_path), ...]."""
+        all_paths = list(self.image_paths)
+        total = len(all_paths)
+        current_idx = [0]
+        undo_stack = []       # list of (action, src, dst, original_name)
+        skip_count = [0]
+        move_counts = {}      # folder_path → count of files moved there
+        for _, fp in slots:
+            move_counts[fp] = len([f for f in os.listdir(fp)
+                                   if os.path.isfile(os.path.join(fp, f))]) \
+                              if os.path.isdir(fp) else 0
+
+        # Build key→folder mapping
+        key_map = {}  # key_num (1-4) → folder_path
+        for key_num, folder_path in slots:
+            key_map[key_num] = folder_path
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Image Sorter")
+        dlg.resize(1100, 780)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        main_layout = QVBoxLayout(dlg)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # ── Top bar ──────────────────────────────────────────────
+        top_bar = _make_panel(bottom_border=True)
+        top_lay = QHBoxLayout(top_bar)
+        top_lay.setContentsMargins(14, 8, 14, 8)
+        top_lay.setSpacing(12)
+
+        progress_lbl = QLabel("")
+        progress_lbl.setStyleSheet(f"color: {FG}; font-size: 10pt; font-weight: 600;")
+        top_lay.addWidget(progress_lbl)
+
+        filename_lbl = QLabel("")
+        filename_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 9pt;")
+        top_lay.addWidget(filename_lbl)
+
+        top_lay.addStretch()
+
+        skip_lbl = QLabel("Skipped: 0")
+        skip_lbl.setStyleSheet(f"color: {ORANGE}; font-size: 9pt; font-weight: 600;")
+        top_lay.addWidget(skip_lbl)
+
+        undo_lbl = QLabel("")
+        undo_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        top_lay.addWidget(undo_lbl)
+
+        main_layout.addWidget(top_bar)
+
+        # ── Central area: image + buckets ────────────────────────
+        center = QWidget()
+        center.setStyleSheet(f"background: {BG};")
+        center_lay = QHBoxLayout(center)
+        center_lay.setContentsMargins(10, 10, 10, 10)
+        center_lay.setSpacing(10)
+
+        # Left buckets (keys 1 & 2)
+        left_panel = QVBoxLayout()
+        left_panel.setSpacing(8)
+        # Right buckets (keys 3 & 4)
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(8)
+
+        bucket_labels = {}  # key_num → (name_label, count_label)
+
+        def _make_bucket(key_num, folder_path):
+            bucket = QFrame()
+            bucket.setFixedWidth(160)
+            bucket.setStyleSheet(
+                f"QFrame {{ background: {CARD_BG}; border: 1px solid {BORDER};"
+                f" border-radius: 10px; }}"
+                f"QLabel {{ border: none; background: transparent; }}")
+            b_lay = QVBoxLayout(bucket)
+            b_lay.setContentsMargins(8, 8, 8, 8)
+            b_lay.setSpacing(4)
+
+            key_badge = QLabel(f"  {key_num}  ")
+            key_badge.setStyleSheet(
+                f"background: {ACCENT_SECONDARY}; color: #fff; font-weight: bold;"
+                f" font-size: 14pt; border-radius: 8px; padding: 4px 8px;")
+            key_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            key_badge.setFixedHeight(36)
+            b_lay.addWidget(key_badge)
+
+            folder_name = os.path.basename(folder_path) or folder_path
+            name_lbl = QLabel(folder_name)
+            name_lbl.setStyleSheet(
+                f"color: {FG}; font-size: 9pt; font-weight: 600;")
+            name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_lbl.setWordWrap(True)
+            name_lbl.setToolTip(folder_path)
+            b_lay.addWidget(name_lbl)
+
+            cnt_lbl = QLabel(f"{move_counts.get(folder_path, 0)} files")
+            cnt_lbl.setStyleSheet(
+                f"color: {FG_MUTED}; font-size: 8pt;")
+            cnt_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            b_lay.addWidget(cnt_lbl)
+
+            b_lay.addStretch()
+            bucket_labels[key_num] = (name_lbl, cnt_lbl)
+            return bucket
+
+        assigned_keys = sorted(key_map.keys())
+        for i, key_num in enumerate(assigned_keys):
+            bucket = _make_bucket(key_num, key_map[key_num])
+            if i % 2 == 0:
+                left_panel.addWidget(bucket)
+            else:
+                right_panel.addWidget(bucket)
+
+        # Fill empty space if fewer than 2 buckets per side
+        left_panel.addStretch()
+        right_panel.addStretch()
+
+        # Image display
+        img_label = QLabel()
+        img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        img_label.setStyleSheet(f"background: {BG}; border: none;")
+        img_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        center_lay.addLayout(left_panel)
+        center_lay.addWidget(img_label, stretch=1)
+        center_lay.addLayout(right_panel)
+        main_layout.addWidget(center, stretch=1)
+
+        # ── Bottom bar: shortcuts help ───────────────────────────
+        bottom_bar = _make_panel()
+        bot_lay = QHBoxLayout(bottom_bar)
+        bot_lay.setContentsMargins(14, 6, 14, 6)
+
+        shortcuts = []
+        for key_num in assigned_keys:
+            fname = os.path.basename(key_map[key_num])
+            shortcuts.append(f"<b>{key_num}</b> {fname}")
+        shortcuts.append(f"<b>Space</b> Skip")
+        shortcuts.append(f"<b>Backspace</b> Undo")
+        shortcuts.append(f"<b>Esc</b> Exit")
+
+        shortcut_lbl = QLabel("  ·  ".join(shortcuts))
+        shortcut_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        shortcut_lbl.setWordWrap(True)
+        bot_lay.addWidget(shortcut_lbl)
+        bot_lay.addStretch()
+
+        exit_btn = QPushButton("Exit Sorter")
+        _style_btn(exit_btn, "muted")
+        exit_btn.clicked.connect(dlg.reject)
+        bot_lay.addWidget(exit_btn)
+        main_layout.addWidget(bottom_bar)
+
+        # ── Image loading ────────────────────────────────────────
+
+        def _load_image(idx):
+            """Load image at idx and display it, scaled to fit the label."""
+            if idx < 0 or idx >= total:
+                img_label.setText(
+                    f"<span style='color:{FG_MUTED};font-size:14pt;'>"
+                    "All images sorted!</span>")
+                progress_lbl.setText(f"Done — {total} images processed")
+                filename_lbl.setText("")
+                return
+            path = all_paths[idx]
+            progress_lbl.setText(f"{idx + 1} / {total}")
+            filename_lbl.setText(os.path.basename(path))
+
+            pil_img = open_image(path)
+            if pil_img is None:
+                img_label.setText(
+                    f"<span style='color:{DANGER};'>Cannot load image</span>")
+                return
+
+            # Scale to fit available space
+            avail_w = img_label.width() or 700
+            avail_h = img_label.height() or 550
+            pil_img.thumbnail((avail_w, avail_h), Image.Resampling.LANCZOS)
+            data = pil_img.tobytes("raw", "RGB")
+            qimg = QImage(data, pil_img.width, pil_img.height,
+                          3 * pil_img.width, QImage.Format.Format_RGB888)
+            img_label.setPixmap(QPixmap.fromImage(qimg))
+
+        def _update_bucket_count(folder_path):
+            for key_num, fp in key_map.items():
+                if fp == folder_path:
+                    _, cnt_lbl = bucket_labels[key_num]
+                    cnt_lbl.setText(f"{move_counts.get(fp, 0)} files")
+
+        def _update_undo_label():
+            if undo_stack:
+                last = undo_stack[-1]
+                undo_lbl.setText(f"Undo: {os.path.basename(last[1])}")
+            else:
+                undo_lbl.setText("")
+
+        # ── Actions ──────────────────────────────────────────────
+
+        def _move_to_folder(folder_path):
+            idx = current_idx[0]
+            if idx >= total:
+                return
+            src = all_paths[idx]
+            if not os.path.exists(src):
+                current_idx[0] += 1
+                _load_image(current_idx[0])
+                return
+
+            folder_name = os.path.basename(folder_path)
+            original_name = os.path.basename(src)
+
+            if auto_rename:
+                # Count existing files to determine next number
+                move_counts[folder_path] = move_counts.get(folder_path, 0) + 1
+                n = move_counts[folder_path]
+                ext = os.path.splitext(src)[1]
+                dst_name = f"{folder_name} ({n}){ext}"
+            else:
+                dst_name = original_name
+                move_counts[folder_path] = move_counts.get(folder_path, 0) + 1
+
+            dst = os.path.join(folder_path, dst_name)
+            # Avoid overwriting
+            if os.path.exists(dst) and not auto_rename:
+                base, ext = os.path.splitext(dst_name)
+                counter = 1
+                while os.path.exists(dst):
+                    dst = os.path.join(folder_path, f"{base}_{counter}{ext}")
+                    counter += 1
+
+            try:
+                shutil.move(src, dst)
+                undo_stack.append(("move", src, dst, original_name))
+                _update_bucket_count(folder_path)
+                _update_undo_label()
+                current_idx[0] += 1
+                _load_image(current_idx[0])
+            except Exception as e:
+                QMessageBox.warning(dlg, "Move Failed",
+                    f"Could not move file:\n{e}")
+
+        def _skip():
+            idx = current_idx[0]
+            if idx >= total:
+                return
+            skip_count[0] += 1
+            skip_lbl.setText(f"Skipped: {skip_count[0]}")
+            current_idx[0] += 1
+            _load_image(current_idx[0])
+
+        def _undo():
+            if not undo_stack:
+                return
+            action, src, dst, original_name = undo_stack.pop()
+            if action == "move" and os.path.exists(dst):
+                try:
+                    # Move back to original location with original name
+                    restore_path = src
+                    os.makedirs(os.path.dirname(restore_path), exist_ok=True)
+                    shutil.move(dst, restore_path)
+                    # Decrement folder count
+                    folder_path = os.path.dirname(dst)
+                    move_counts[folder_path] = max(0, move_counts.get(folder_path, 0) - 1)
+                    _update_bucket_count(folder_path)
+                    # Go back to that image
+                    current_idx[0] = max(0, current_idx[0] - 1)
+                    _load_image(current_idx[0])
+                except Exception as e:
+                    QMessageBox.warning(dlg, "Undo Failed",
+                        f"Could not undo:\n{e}")
+            _update_undo_label()
+
+        # ── Keyboard handling ────────────────────────────────────
+
+        def _key_handler(event):
+            key = event.key()
+            if key == Qt.Key.Key_1 and 1 in key_map:
+                _move_to_folder(key_map[1])
+            elif key == Qt.Key.Key_2 and 2 in key_map:
+                _move_to_folder(key_map[2])
+            elif key == Qt.Key.Key_3 and 3 in key_map:
+                _move_to_folder(key_map[3])
+            elif key == Qt.Key.Key_4 and 4 in key_map:
+                _move_to_folder(key_map[4])
+            elif key == Qt.Key.Key_Space:
+                _skip()
+            elif key == Qt.Key.Key_Backspace:
+                _undo()
+            elif key == Qt.Key.Key_Escape:
+                dlg.reject()
+
+        dlg.keyPressEvent = _key_handler
+
+        # Load first image
+        _load_image(0)
+
+        self._sorter_dlg = dlg
+        dlg.exec()
+
+        # Summary on close
+        total_moved = len(undo_stack)
+        total_skipped = skip_count[0]
+        if total_moved > 0 or total_skipped > 0:
+            summary_parts = []
+            if total_moved:
+                summary_parts.append(f"{total_moved} moved")
+            if total_skipped:
+                summary_parts.append(f"{total_skipped} skipped")
+            self.update_status(
+                f"Sorter: {', '.join(summary_parts)} of {total} images", "green")
 
     # --- Feature: LORA Dataset Curator -------------------------------------------
 
