@@ -10194,7 +10194,7 @@ class ImageSearchApp(QMainWindow):
             _style_btn(browse_btn, "secondary")
             browse_btn.setFixedWidth(80)
 
-            def _pick(ed=folder_edit):
+            def _pick(_checked=False, ed=folder_edit):
                 folder = QFileDialog.getExistingDirectory(dlg, "Select Folder")
                 if folder:
                     ed.setText(folder)
