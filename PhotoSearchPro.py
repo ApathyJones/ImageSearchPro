@@ -10516,71 +10516,49 @@ class ImageSearchApp(QMainWindow):
                 return "Not selected"
 
         def _make_image_card(score_dict, is_selected, parent_grid, row, col):
-            """Create a single image card with thumbnail and explanation."""
-            card = QFrame()
-            card.setStyleSheet(
-                f"QFrame {{ background: {CARD_BG}; border: 1px solid {BORDER};"
-                f" border-radius: 10px; }}"
-                f"QLabel {{ border: none; background: transparent; }}")
-            card_lay = QVBoxLayout(card)
-            card_lay.setContentsMargins(6, 6, 6, 6)
-            card_lay.setSpacing(4)
-
-            # Thumbnail
-            img_label = ClickableImageLabel()
-            img_label.setFixedSize(THUMB_SIZE[0], THUMB_SIZE[1])
-            img_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            """Create a card using the standard _build_dialog_card helper."""
             path = score_dict["path"]
+
+            # Build pixmap from image
+            pixmap = None
             try:
                 pil_img = open_image(path)
                 if pil_img is not None:
-                    pil_img.thumbnail((THUMB_SIZE[0], THUMB_SIZE[1]), Image.Resampling.LANCZOS)
+                    pil_img.thumbnail(THUMB_SIZE, Image.Resampling.LANCZOS)
                     data = pil_img.tobytes("raw", "RGB")
                     qimg = QImage(data, pil_img.width, pil_img.height,
                                   3 * pil_img.width, QImage.Format.Format_RGB888)
-                    pm = QPixmap.fromImage(qimg)
-                    img_label.setPixmap(pm)
+                    pixmap = QPixmap.fromImage(qimg)
             except Exception:
-                img_label.setText("?")
+                pass
 
-            def _open_path(p=path):
-                self.open_image_viewer(p)
-            img_label._on_click = _open_path
-            card_lay.addWidget(img_label, alignment=Qt.AlignmentFlag.AlignCenter)
-
-            # Score badge
+            # Title = score badge
             composite = score_dict["composite"]
             if is_selected:
-                badge_color = ACCENT
-                badge_text = f"Score: {composite:.2f}"
+                title_color = ACCENT
+                title_text = f"Score: {composite:.2f}"
             else:
-                badge_color = FG_MUTED
-                badge_text = f"Score: {composite:.2f}" if score_dict["has_face"] else "No face"
-            badge = QLabel(badge_text)
-            badge.setStyleSheet(
-                f"color: {badge_color}; font-size: 7pt; font-weight: 600;")
-            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            card_lay.addWidget(badge)
+                title_color = FG_MUTED
+                title_text = f"Score: {composite:.2f}" if score_dict["has_face"] else "No face"
 
-            # Explanation text
+            # Subtitle = explanation + filename
             explanation = _build_explanation(score_dict, is_selected)
-            exp_label = QLabel(explanation)
-            exp_label.setWordWrap(True)
-            exp_label.setStyleSheet(
-                f"color: {FG_MUTED}; font-size: 7pt;")
-            exp_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            exp_label.setMaximumHeight(36)
-            card_lay.addWidget(exp_label)
-
-            # Filename
             fname = os.path.basename(path)
-            if len(fname) > 25:
-                fname = fname[:22] + "…"
-            name_label = QLabel(fname)
-            name_label.setStyleSheet(f"color: {FG_MUTED}; font-size: 7pt;")
-            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_label.setToolTip(os.path.basename(path))
-            card_lay.addWidget(name_label)
+            subtitle_text = f"{explanation}\n{fname}"
+
+            card, img_label = _build_dialog_card(
+                pixmap=pixmap,
+                title_text=title_text,
+                subtitle_text=subtitle_text,
+                title_color=title_color,
+            )
+
+            # Make thumbnail clickable to open in viewer
+            def _open_path(ev, p=path):
+                self.open_image_viewer(p)
+            img_label.mousePressEvent = _open_path
+            img_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            img_label.setToolTip("Click to open in viewer")
 
             parent_grid.addWidget(card, row, col)
 
@@ -10592,7 +10570,7 @@ class ImageSearchApp(QMainWindow):
 
         sel_grid_widget = QWidget()
         sel_grid = QGridLayout(sel_grid_widget)
-        sel_grid.setSpacing(8)
+        sel_grid.setSpacing(10)
         sel_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         for idx, score_idx in enumerate(selected_indices):
@@ -10617,7 +10595,7 @@ class ImageSearchApp(QMainWindow):
 
         rej_grid_widget = QWidget()
         rej_grid = QGridLayout(rej_grid_widget)
-        rej_grid.setSpacing(8)
+        rej_grid.setSpacing(10)
         rej_grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
         # Lazy-build rejected cards on first expand
