@@ -14,6 +14,7 @@ import ctypes
 import subprocess
 import re
 import gc
+import hashlib
 import warnings
 from PIL import Image
 import numpy as np
@@ -3465,6 +3466,14 @@ class ImageSearchApp(QMainWindow):
         btn_duplicates = QPushButton("Duplicates")
         btn_duplicates.clicked.connect(self.on_find_duplicates)
         toolbar_layout.addWidget(btn_duplicates)
+
+        btn_exact_dupes = QPushButton("Exact Duplicates")
+        btn_exact_dupes.setToolTip(
+            "Find 100% identical files using file hashes (SHA-256).\n"
+            "Does not require indexing — scans the selected folders directly."
+        )
+        btn_exact_dupes.clicked.connect(self.on_find_exact_duplicates)
+        toolbar_layout.addWidget(btn_exact_dupes)
 
         btn_smart = QPushButton("Smart Albums")
         btn_smart.clicked.connect(self.on_smart_albums)
@@ -8458,6 +8467,277 @@ class ImageSearchApp(QMainWindow):
         apply_btn.clicked.connect(_apply)
         dlg.exec()
 
+
+    # --- Feature 2b: Exact (Hash-Based) Duplicate Finder ---
+
+    def on_find_exact_duplicates(self):
+        """Launch the exact duplicate finder dialog — scans folders for byte-identical files."""
+        scan_folders = self.folders if self.folders else ([self.folder] if self.folder else [])
+        if not scan_folders:
+            QMessageBox.warning(self, "No Folder Selected",
+                "Please select a folder first (use the folder selector at the top).")
+            return
+        if self.is_indexing:
+            QMessageBox.warning(self, "Busy", "Please wait for indexing to complete.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Find Exact Duplicates")
+        dlg.setMinimumWidth(500)
+        dlg.setStyleSheet(_dlg_stylesheet())
+        _dark_title(dlg)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        hdr = _make_panel(bottom_border=True)
+        hdr_lay = QVBoxLayout(hdr)
+        hdr_lay.setContentsMargins(14, 10, 14, 10)
+        hdr_lay.addWidget(QLabel("<b>Find Exact Duplicate Files</b>"))
+        layout.addWidget(hdr)
+
+        body = QWidget()
+        body_lay = QVBoxLayout(body)
+        body_lay.setContentsMargins(14, 12, 14, 12)
+        body_lay.setSpacing(10)
+
+        desc = QLabel(
+            "Finds 100% byte-identical files using SHA-256 hashing.\n"
+            "This does not require indexing — it scans the selected folders directly.")
+        desc.setStyleSheet(f"color: {FG}; font-size: 9pt;")
+        desc.setWordWrap(True)
+        body_lay.addWidget(desc)
+
+        # File type selection
+        type_lbl = QLabel("File types to scan:")
+        type_lbl.setStyleSheet(f"color: {FG};")
+        body_lay.addWidget(type_lbl)
+
+        cb_images = QCheckBox("Images")
+        cb_images.setChecked(True)
+        cb_videos = QCheckBox("Videos")
+        cb_videos.setChecked(False)
+        cb_all = QCheckBox("All files (any extension)")
+        cb_all.setChecked(False)
+
+        def _toggle_all(checked):
+            cb_images.setEnabled(not checked)
+            cb_videos.setEnabled(not checked)
+
+        cb_all.toggled.connect(_toggle_all)
+
+        type_row = QHBoxLayout()
+        type_row.addWidget(cb_images)
+        type_row.addWidget(cb_videos)
+        type_row.addWidget(cb_all)
+        type_row.addStretch()
+        body_lay.addLayout(type_row)
+
+        # Min file size filter
+        size_row = QHBoxLayout()
+        size_lbl = QLabel("Minimum file size:")
+        size_lbl.setStyleSheet(f"color: {FG};")
+        size_row.addWidget(size_lbl)
+        size_spin = QSpinBox()
+        size_spin.setRange(0, 100000)
+        size_spin.setValue(1)
+        size_spin.setSuffix(" KB")
+        size_spin.setToolTip("Skip files smaller than this (0 = include all)")
+        size_row.addWidget(size_spin)
+        size_row.addStretch()
+        body_lay.addLayout(size_row)
+
+        folders_lbl = QLabel(f"Scanning {len(scan_folders)} folder(s):")
+        folders_lbl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+        body_lay.addWidget(folders_lbl)
+        for f in scan_folders[:5]:
+            fl = QLabel(f"  {f}")
+            fl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+            body_lay.addWidget(fl)
+        if len(scan_folders) > 5:
+            fl = QLabel(f"  ... and {len(scan_folders) - 5} more")
+            fl.setStyleSheet(f"color: {FG_MUTED}; font-size: 8pt;")
+            body_lay.addWidget(fl)
+
+        layout.addWidget(body)
+
+        def start_scan():
+            extensions = None  # None means all files
+            if not cb_all.isChecked():
+                extensions = set()
+                if cb_images.isChecked():
+                    extensions.update(IMAGE_EXTS)
+                if cb_videos.isChecked():
+                    extensions.update(VIDEO_EXTS)
+                if not extensions:
+                    QMessageBox.warning(dlg, "No Types Selected",
+                        "Please select at least one file type to scan, or check 'All files'.")
+                    return
+            min_size = size_spin.value() * 1024  # convert KB to bytes
+            dlg.accept()
+            self.update_status("Scanning for exact duplicates...", "orange")
+            self.progress.setRange(0, 0)
+            Thread(target=lambda: self._find_exact_duplicates_worker(
+                scan_folders, extensions, min_size), daemon=True).start()
+
+        footer = _make_panel()
+        foot_lay = QHBoxLayout(footer)
+        foot_lay.setContentsMargins(12, 8, 12, 8)
+        foot_lay.setSpacing(6)
+        scan_btn = QPushButton("Find Exact Duplicates")
+        cancel_btn = QPushButton("Cancel")
+        _style_btn(scan_btn, "accent")
+        _style_btn(cancel_btn, "muted")
+        scan_btn.clicked.connect(start_scan)
+        cancel_btn.clicked.connect(dlg.reject)
+        foot_lay.addStretch()
+        foot_lay.addWidget(scan_btn)
+        foot_lay.addWidget(cancel_btn)
+        layout.addWidget(footer)
+        dlg.exec()
+
+    def _find_exact_duplicates_worker(self, scan_folders, extensions, min_size):
+        """Find byte-identical files by grouping by size then hashing.
+
+        Uses a two-pass approach for efficiency:
+        1. Group files by size (fast — no I/O beyond stat)
+        2. Only hash files where 2+ share the same size
+        """
+        try:
+            safe_print("[EXACT-DUPES] Phase 1: Collecting files...")
+            self._safe_after(0, lambda: self.progress_label.setText("Collecting files..."))
+
+            # Phase 1: Collect all file paths and group by size
+            size_groups = {}  # size -> [path, ...]
+            file_count = 0
+            for folder in scan_folders:
+                for root, _dirs, files in os.walk(folder):
+                    for fname in files:
+                        if extensions is not None:
+                            if not fname.lower().endswith(tuple(extensions)):
+                                continue
+                        fpath = os.path.join(root, fname)
+                        try:
+                            fsize = os.path.getsize(fpath)
+                        except OSError:
+                            continue
+                        if fsize < min_size:
+                            continue
+                        size_groups.setdefault(fsize, []).append(fpath)
+                        file_count += 1
+                        if file_count % 1000 == 0:
+                            self._safe_after(0, lambda c=file_count:
+                                self.progress_label.setText(f"Collecting files... {c:,} found"))
+
+            # Filter to only sizes with 2+ files (potential duplicates)
+            candidates = {sz: paths for sz, paths in size_groups.items() if len(paths) >= 2}
+            total_to_hash = sum(len(paths) for paths in candidates.values())
+            safe_print(f"[EXACT-DUPES] Found {file_count:,} files, "
+                       f"{total_to_hash:,} candidates in {len(candidates):,} size groups")
+
+            if total_to_hash == 0:
+                self._safe_after(0, lambda: self.progress.setRange(0, 100))
+                self._safe_after(0, lambda: self.progress.setValue(0))
+                self._safe_after(0, lambda: self.progress_label.setText(""))
+                self._safe_after(0, lambda: self.update_status("No exact duplicates found", "green"))
+                self._safe_after(0, lambda: QMessageBox.information(
+                    self, "No Exact Duplicates",
+                    f"Scanned {file_count:,} files — no files share the same size.\n"
+                    "No exact duplicates possible."))
+                return
+
+            # Phase 2: Hash candidates
+            safe_print("[EXACT-DUPES] Phase 2: Hashing candidate files...")
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            hash_groups = {}  # hash -> [path, ...]
+            hashed = 0
+            HASH_CHUNK_SIZE = 1024 * 1024  # 1 MB read chunks
+
+            for fsize, paths in candidates.items():
+                for fpath in paths:
+                    try:
+                        h = hashlib.sha256()
+                        with open(fpath, "rb") as f:
+                            while True:
+                                chunk = f.read(HASH_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                h.update(chunk)
+                        digest = h.hexdigest()
+                        hash_groups.setdefault(digest, []).append(fpath)
+                    except (OSError, IOError):
+                        pass
+                    hashed += 1
+                    if hashed % 50 == 0 or hashed == total_to_hash:
+                        pct = int(hashed / total_to_hash * 100)
+                        self._safe_after(0, lambda p=pct, h=hashed, t=total_to_hash:
+                            self.update_progress(p, f"Hashing files: {h:,}/{t:,}"))
+
+            # Filter to groups with 2+ identical files
+            dup_groups = [sorted(paths) for paths in hash_groups.values() if len(paths) >= 2]
+            dup_groups.sort(key=lambda g: len(g), reverse=True)
+
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+
+            if not dup_groups:
+                safe_print(f"[EXACT-DUPES] No exact duplicates found among {total_to_hash:,} candidates")
+                self._safe_after(0, lambda: self.update_status("No exact duplicates found", "green"))
+                self._safe_after(0, lambda: QMessageBox.information(
+                    self, "No Exact Duplicates",
+                    f"Scanned {file_count:,} files, hashed {total_to_hash:,} candidates.\n"
+                    "No byte-identical duplicates found."))
+                return
+
+            # Phase 3: Pre-load thumbnails for the dialog
+            safe_print(f"[EXACT-DUPES] Found {len(dup_groups)} groups — loading thumbnails...")
+            total_thumbs = sum(len(g) for g in dup_groups)
+            loaded = 0
+            group_data = []
+            for group in dup_groups:
+                members = []
+                for abs_path in group:
+                    pil_img = None
+                    if abs_path.lower().endswith(IMAGE_EXTS):
+                        try:
+                            if abs_path.lower().endswith(RAW_EXTS):
+                                import rawpy
+                                with rawpy.imread(abs_path) as raw:
+                                    rgb = raw.postprocess(use_camera_wb=True,
+                                                          no_auto_bright=False, output_bps=8)
+                                pil_img = Image.fromarray(rgb)
+                            else:
+                                safe_p = get_safe_path(abs_path)
+                                pil_img = Image.open(safe_p)
+                                pil_img.load()
+                            pil_img.thumbnail((150, 150))
+                        except Exception:
+                            pil_img = None
+                    members.append((abs_path, abs_path, pil_img))
+                    loaded += 1
+                    if loaded % 5 == 0 or loaded == total_thumbs:
+                        pct = int(loaded / total_thumbs * 100)
+                        self._safe_after(0, lambda p=pct, l=loaded, t=total_thumbs:
+                            self.update_progress(p, f"Loading thumbnails: {l:,}/{t:,}"))
+                group_data.append(members)
+
+            total_redundant = sum(len(g) - 1 for g in dup_groups)
+            safe_print(f"[EXACT-DUPES] Done: {len(dup_groups)} groups, "
+                       f"{total_redundant} redundant files")
+            self._safe_after(0, lambda: self.update_status(
+                f"Found {len(dup_groups)} exact duplicate groups "
+                f"({total_redundant} redundant files)", ORANGE))
+            self._safe_after(0, lambda gd=group_data:
+                self.open_duplicates_dialog(gd, threshold=None))
+
+        except Exception as e:
+            safe_print(f"[EXACT-DUPES] Error: {e}")
+            import traceback; traceback.print_exc()
+            self._safe_after(0, lambda: self.progress.setRange(0, 100))
+            self._safe_after(0, lambda: self.progress.setValue(0))
+            self._safe_after(0, lambda: self.progress_label.setText(""))
+            self._safe_after(0, lambda: self.update_status("Exact duplicate scan failed", "red"))
 
     # --- Feature 3: Smart Albums (Auto-Collections via Clustering) ---
 
